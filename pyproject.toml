@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speedman"
+version = "0.1.0"
+description = "Ultra-speed speech engine: speech-aware time compression that stays intelligible"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "soundfile>=0.12",
+    "pyrubberband>=0.4",
+    "librosa>=0.10",
+    "pyloudnorm>=0.1.1",
+    "typer>=0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+eval = ["torch", "torchaudio", "transformers", "jiwer"]
+
+[project.scripts]
+speedman = "speedman.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

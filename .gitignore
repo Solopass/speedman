@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# the Rubber Band binary is GPL software you download yourself, not ours to ship
+bin/rubberband
+bin/rubberband.exe
+
+# generated audio
+*_compare/
+*_[0-9]x.wav
+eval/results.md
+eval/corpus/
