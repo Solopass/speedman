@@ -1,0 +1,1 @@
+"""Speedman API application."""

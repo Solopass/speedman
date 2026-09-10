@@ -1,17 +1,43 @@
+# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
-.venv/
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# the Rubber Band binary is GPL software you download yourself, not ours to ship
-bin/rubberband
-bin/rubberband.exe
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
 
-# generated audio
-*_compare/
-*_[0-9]x.wav
-eval/results.md
-eval/corpus/
+# Caches & Logs
+.cache/
+.pytest_cache/
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Audio Outputs
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.part
+comparisons/

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speedman ⚡ Ultra-Speed Speech Engine</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-dim: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --accent-subtle: rgba(56, 139, 253, 0.15);
+      --success: #3fb950;
+      --warning: #d29922;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.5;
+      padding: 2rem 1rem;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+    h1 span.badge {
+      font-size: 0.75rem;
+      background: var(--accent-subtle);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    p.subtitle {
+      color: var(--text-dim);
+      font-size: 0.95rem;
+      margin-top: 0.25rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 2rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: rgba(255,255,255,0.01);
+    }
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-subtle);
+    }
+    .drop-zone p { color: var(--text-dim); font-size: 0.9rem; }
+    .drop-zone .file-name { color: var(--accent); font-weight: 600; margin-top: 0.5rem; }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    @media (max-width: 600px) { .controls { grid-template-columns: 1fr; } }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .speed-slider-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+    .speed-val {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 55px;
+    }
+    .preset-buttons {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .btn-preset {
+      flex: 1;
+      padding: 0.5rem;
+      background: #21262d;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+    .btn-preset.active {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+    .toggles {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      color: var(--text);
+      text-transform: none;
+    }
+    .btn-run {
+      background: var(--accent);
+      color: #0d1117;
+      font-size: 1rem;
+      font-weight: 700;
+      padding: 0.85rem 1.5rem;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 1.25rem;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+    .btn-run:hover { background: var(--accent-hover); }
+    .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-bar {
+      display: none;
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .status-bar.loading {
+      display: block;
+      background: #1f242c;
+      color: var(--warning);
+      border: 1px solid var(--warning);
+    }
+    .status-bar.success {
+      display: block;
+      background: #1b271f;
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+    .player-card {
+      display: none;
+    }
+    .player-card.active {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      background: #21262d;
+      padding: 0.75rem;
+      border-radius: 6px;
+      text-align: center;
+    }
+    @media (max-width: 600px) { .metrics-grid { grid-template-columns: 1fr 1fr; } }
+    .metric-val { font-size: 1.2rem; font-weight: 700; color: #fff; }
+    .metric-lbl { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; }
+    audio {
+      width: 100%;
+      border-radius: 6px;
+      margin-top: 0.5rem;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-top: auto;
+      padding-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Speedman ⚡ <span class="badge">ON-DEMAND API</span></h1>
+      <p class="subtitle">Speech-aware time compression that preserves intelligibility at 5×–6×</p>
+    </header>
+
+    <div class="card">
+      <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 0.5rem;">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p>Drag and drop any audio file here, or click to browse</p>
+        <p style="font-size: 0.75rem; margin-top: 4px;">Supports MP3, WAV, M4A, FLAC, OGG, OPUS, AAC</p>
+        <div class="file-name" id="fileNameDisplay"></div>
+        <input type="file" id="fileInput" accept="audio/*" style="display: none;" onchange="handleFileSelect(this.files)">
+      </div>
+
+      <div class="controls">
+        <div class="control-group">
+          <label>Target Speed Multiplier</label>
+          <div class="speed-slider-container">
+            <input type="range" id="speedSlider" min="1.0" max="10.0" step="0.5" value="5.0" oninput="updateSpeed(this.value)">
+            <span class="speed-val" id="speedDisplay">5.0×</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>DSP Clarity Preset</label>
+          <div class="preset-buttons">
+            <button class="btn-preset" onclick="setPreset('natural', this)">Natural</button>
+            <button class="btn-preset active" onclick="setPreset('fast', this)">Fast</button>
+            <button class="btn-preset" onclick="setPreset('aggressive', this)">Aggressive</button>
+            <button class="btn-preset" onclick="setPreset('max', this)">Max</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toggles">
+        <label class="checkbox-label">
+          <input type="checkbox" id="uniformToggle"> Plain constant-rate stretch (Control)
+        </label>
+      </div>
+
+      <button class="btn-run" id="processBtn" onclick="processAudio()" disabled>
+        Process with Speedman
+      </button>
+
+      <div class="status-bar" id="statusBar"></div>
+    </div>
+
+    <div class="card player-card" id="playerCard">
+      <div class="metrics-grid">
+        <div>
+          <div class="metric-val" id="inDurVal">0:00</div>
+          <div class="metric-lbl">Original Duration</div>
+        </div>
+        <div>
+          <div class="metric-val" id="outDurVal">0:00</div>
+          <div class="metric-lbl">Sped Duration</div>
+        </div>
+        <div>
+          <div class="metric-val" id="silenceVal">0%</div>
+          <div class="metric-lbl">Silence Fraction</div>
+        </div>
+        <div>
+          <div class="metric-val" id="effRateVal">0×</div>
+          <div class="metric-lbl">Effective Speech Rate</div>
+        </div>
+      </div>
+
+      <div>
+        <label>Compressed Result</label>
+        <audio id="audioPlayer" controls></audio>
+      </div>
+    </div>
+
+    <footer>
+      Running strictly on-demand on E-Cores (8–15) • Port 8081 • Zero-RAM Standby
+    </footer>
+  </div>
+
+  <script>
+    let selectedFile = null;
+    let selectedPreset = 'fast';
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const speedSlider = document.getElementById('speedSlider');
+    const speedDisplay = document.getElementById('speedDisplay');
+    const processBtn = document.getElementById('processBtn');
+    const statusBar = document.getElementById('statusBar');
+    const playerCard = document.getElementById('playerCard');
+    const audioPlayer = document.getElementById('audioPlayer');
+
+    ['dragenter', 'dragover'].forEach(name => {
+      dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }, false);
+    });
+    ['dragleave', 'drop'].forEach(name => {
+      dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); }, false);
+    });
+    dropZone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer.files;
+      if (files.length) handleFileSelect(files);
+    });
+
+    function handleFileSelect(files) {
+      if (!files.length) return;
+      selectedFile = files[0];
+      fileNameDisplay.textContent = 'Selected: ' + selectedFile.name + ' (' + (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB)';
+      processBtn.disabled = false;
+    }
+
+    function updateSpeed(val) {
+      speedDisplay.textContent = parseFloat(val).toFixed(1) + '×';
+    }
+
+    function setPreset(preset, btn) {
+      selectedPreset = preset;
+      document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    function fmtTime(sec) {
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    async function processAudio() {
+      if (!selectedFile) return;
+      processBtn.disabled = true;
+      statusBar.className = 'status-bar loading';
+      statusBar.textContent = 'Processing audio through VAD, non-uniform time stretching, and clarity chain...';
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('speed', speedSlider.value);
+      formData.append('preset', selectedPreset);
+      formData.append('uniform', document.getElementById('uniformToggle').checked);
+
+      try {
+        const res = await fetch('/api/v1/compress', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || 'Processing failed');
+        }
+        const data = await res.json();
+        statusBar.className = 'status-bar success';
+        statusBar.textContent = 'Compression complete in ' + data.processing_time_s + 's (' + data.compression_ratio + 'x reduction)!';
+
+        document.getElementById('inDurVal').textContent = fmtTime(data.input_duration_s);
+        document.getElementById('outDurVal').textContent = fmtTime(data.output_duration_s);
+        document.getElementById('silenceVal').textContent = Math.round(data.silence_fraction * 100) + '%';
+        document.getElementById('effRateVal').textContent = data.effective_speech_rate + '×';
+
+        audioPlayer.src = data.audio_url;
+        playerCard.classList.add('active');
+        audioPlayer.play().catch(() => {});
+      } catch (e) {
+        statusBar.className = 'status-bar loading';
+        statusBar.style.color = '#f85149';
+        statusBar.style.borderColor = '#f85149';
+        statusBar.textContent = 'Error: ' + e.message;
+      } finally {
+        processBtn.disabled = false;
+      }
+    }
+  
+    // Heartbeat Keep-Alive: Tells server you are actively in the app
+    const sessionId = 'speedman_' + Math.random().toString(36).substring(2, 10);
+    function sendHeartbeat() {
+      fetch('/api/v1/heartbeat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: sessionId})
+      }).catch(() => {});
+    }
+    sendHeartbeat();
+    setInterval(sendHeartbeat, 5000);
+
+    window.addEventListener('beforeunload', () => {
+      navigator.sendBeacon('/api/v1/client-disconnect', JSON.stringify({session_id: sessionId}));
+    });
+  </script>
+</body>
+</html>
