@@ -111,3 +111,12 @@ Past ~2.5x, naive speed-up becomes mush — not because information is gone, but
 **Within-speech reallocation** cannot make the file shorter — the map is normalised to hit the requested length exactly — but it moves the time budget from redundant vowel centres to consonant transients, so the consonants inside a 6x file live in a slower regime than 6x.
 
 Honest headline: together these buy roughly **1.5–3x of effective headroom** over naive speed-up, not an order of magnitude. That is enough to make 6x feel like 4.5x, which is the entire point. See `docs/ARCHITECTURE.md` for the arithmetic, including where each lever stops paying.
+
+---
+
+## License
+
+**Source-available, noncommercial.** Copyright © 2026 Solopass. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+- ✅ **Free** for personal use, hobby projects, study and research, and for nonprofits, schools and public institutions.
+- 💼 **Commercial use** (in a business, product or paid service, or for-profit internal use) needs a paid license. See [COMMERCIAL.md](COMMERCIAL.md), or contact [realsolopass@gmail.com](mailto:realsolopass@gmail.com) · <https://polymatica.pages.dev>.
