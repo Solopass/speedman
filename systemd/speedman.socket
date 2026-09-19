@@ -1,0 +1,9 @@
+[Unit]
+Description=Workstation Speedman Speech Engine API Socket (On-Demand Activation)
+PartOf=speedman.service
+
+[Socket]
+ListenStream=127.0.0.1:8081
+
+[Install]
+WantedBy=sockets.target

@@ -35,13 +35,27 @@ Renders your clip eight ways — plain constant-rate stretch (roughly what a med
 
 Blind on purpose. Knowing which file is the clever one is the fastest way to convince yourself it sounds better when it does not. Listen to `original.wav` first to reset your ear, then the rest in a random order, and rate each for **effort** rather than preference: how hard did you have to work to follow it?
 
-**4. Once you know what you like**
+**4. Web Studio & Desktop App (1-Click)**
+
+Double-click **`Speedman.lnk`** on your Windows Desktop (or run `Speedman.bat`) to open the Web Studio at **`http://127.0.0.1:8081/`**.
+- **Compression Studio:** Drag and drop any audio or enter a workstation path (`D:\Audio\...`), choose speed (1×–10×) and DSP preset, and scrub the output.
+- **Blind A/B Evaluation Studio:** Renders your clip randomized across presets and speeds; audition blind, then click **Reveal Mapping** to see which preset won.
+- **Explorer 1-Click:** Right-click any audio file in Windows File Explorer and choose **Send to → Speedman (5x Fast)** to compress it immediately without opening a terminal!
+
+**5. Once you know what you like via CLI**
 
 ```
 speedman yourfile.mp3 --speed 6 --preset fast
 ```
 
-**Windows:** drag an audio file onto `speedman.bat` to run the comparison without touching a terminal. Double-click it with no file to run the setup check.
+---
+
+## Architecture & Workstation Standards
+
+- **On-Demand Socket Activation:** Runs on WSL systemd socket `127.0.0.1:8081`. Idles at **0 MB RAM** and **0% CPU** on standby; wakes instantly on HTTP request or desktop launch.
+- **E-Core Pinning:** Pinned strictly to E-cores (8–15) with `nice -n 10` and `ionice -c 3` so heavy compression runs smoothly in the background without affecting gaming or local AI inference.
+- **0-Leak Policy on C:\\**: All processed audio and logs are stored exclusively in `D:\Audio\Speed\`.
+- **API Reference:** Detailed REST endpoints, JSON models, and presets in [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md). Interactive Swagger UI at `http://127.0.0.1:8081/docs`.
 
 ---
 

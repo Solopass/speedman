@@ -1,0 +1,17 @@
+[Unit]
+Description=Workstation Speedman Speech Engine API (FastAPI + Rubberband DSP)
+After=network.target speedman.socket
+Requires=speedman.socket
+
+[Service]
+Type=simple
+User=jake
+WorkingDirectory=/mnt/d/Workspace/speedman
+ExecStart=/mnt/d/Workspace/speedman/run.sh
+Restart=no
+Nice=10
+Environment="UV_CACHE_DIR=/mnt/d/AI/Cache/uv"
+Environment="PYTHONPATH=/mnt/d/Workspace/speedman/src:/mnt/d/Workspace/speedman"
+
+[Install]
+WantedBy=multi-user.target
