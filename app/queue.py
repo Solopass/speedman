@@ -1,0 +1,253 @@
+"""Asynchronous Job Queue and Process Cancellation for Speedman.
+
+Manages background compression jobs on workstation E-cores, tracks measured progress %,
+chunk stages, and ETAs, and supports clean cancellation.
+"""
+from __future__ import annotations
+
+import logging
+import queue
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
+import numpy as np
+
+from speedman import io as sio
+from speedman.config import build_config
+from speedman.pipeline import process
+from speedman.chunking import CancelledError
+
+logger = logging.getLogger("speedman_queue")
+
+
+@dataclass
+class JobProgress:
+    stage: str = "queued"
+    progress_pct: float = 0.0
+    current_chunk: int = 0
+    total_chunks: int = 1
+    elapsed_s: float = 0.0
+    eta_s: Optional[float] = None
+
+
+class SpeedmanJob:
+    def __init__(
+        self,
+        job_id: str,
+        input_path: Path,
+        speed: float = 5.0,
+        preset: str = "fast",
+        uniform: bool = False,
+        output_dir: Optional[Path] = None,
+    ):
+        self.job_id = job_id
+        self.input_path = input_path
+        self.speed = speed
+        self.preset = preset
+        self.uniform = uniform
+        self.output_dir = output_dir or Path("/mnt/d/Audio/Speed")
+
+        self.status = "queued"  # queued | processing | completed | failed | cancelled
+        self.progress = JobProgress()
+        self.result: Optional[Dict[str, Any]] = None
+        self.error: Optional[str] = None
+        self.created_at = time.time()
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+        if self.status in ("queued", "processing"):
+            self.status = "cancelled"
+            self.progress.stage = "cancelled"
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "stage": self.progress.stage,
+            "progress_pct": self.progress.progress_pct,
+            "current_chunk": self.progress.current_chunk,
+            "total_chunks": self.progress.total_chunks,
+            "elapsed_s": round(self.progress.elapsed_s, 1),
+            "eta_s": self.progress.eta_s,
+            "speed": self.speed,
+            "preset": self.preset,
+            "uniform": self.uniform,
+            "input_filename": self.input_path.name,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "result": self.result,
+        }
+
+
+class JobManager:
+    def __init__(self, max_history: int = 50):
+        self.jobs: Dict[str, SpeedmanJob] = {}
+        self.job_queue: queue.Queue[SpeedmanJob] = queue.Queue()
+        self.max_history = max_history
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="speedman_worker")
+        self._worker_thread.start()
+
+    def submit(
+        self,
+        input_path: Path,
+        speed: float = 5.0,
+        preset: str = "fast",
+        uniform: bool = False,
+        output_dir: Optional[Path] = None,
+    ) -> SpeedmanJob:
+        job_id = f"job_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        job = SpeedmanJob(
+            job_id=job_id,
+            input_path=input_path,
+            speed=speed,
+            preset=preset,
+            uniform=uniform,
+            output_dir=output_dir,
+        )
+        with self._lock:
+            self.jobs[job_id] = job
+            self._trim_history()
+
+        self.job_queue.put(job)
+        logger.info(f"[queue] Job {job_id} queued for {input_path.name} ({speed}x {preset})")
+        return job
+
+    def get_job(self, job_id: str) -> Optional[SpeedmanJob]:
+        with self._lock:
+            return self.jobs.get(job_id)
+
+    def cancel_job(self, job_id: str) -> bool:
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                return False
+            job.cancel()
+            logger.info(f"[queue] Job {job_id} cancellation signaled")
+            return True
+
+    def list_jobs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._lock:
+            sorted_jobs = sorted(self.jobs.values(), key=lambda j: j.created_at, reverse=True)
+            return [j.to_dict() for j in sorted_jobs[:limit]]
+
+    def active_count(self) -> int:
+        with self._lock:
+            return sum(1 for j in self.jobs.values() if j.status in ("queued", "processing"))
+
+    def _trim_history(self):
+        if len(self.jobs) > self.max_history:
+            terminal = [k for k, j in self.jobs.items() if j.status in ("completed", "failed", "cancelled")]
+            terminal.sort(key=lambda k: self.jobs[k].created_at)
+            for k in terminal[: len(self.jobs) - self.max_history]:
+                self.jobs.pop(k, None)
+
+    def _worker_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                job = self.job_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if job.is_cancelled():
+                job.status = "cancelled"
+                self.job_queue.task_done()
+                continue
+
+            self._execute_job(job)
+            self.job_queue.task_done()
+
+    def _execute_job(self, job: SpeedmanJob):
+        job.status = "processing"
+        job.started_at = time.time()
+        job.progress.stage = "loading"
+        logger.info(f"[worker] Starting job {job.job_id} on {job.input_path}")
+
+        t_start = time.perf_counter()
+
+        def on_prog(data: str | dict):
+            if isinstance(data, str):
+                job.progress.stage = data
+            elif isinstance(data, dict):
+                job.progress.stage = data.get("stage", job.progress.stage)
+                job.progress.progress_pct = data.get("progress_pct", job.progress.progress_pct)
+                job.progress.current_chunk = data.get("current_chunk", job.progress.current_chunk)
+                job.progress.total_chunks = data.get("total_chunks", job.progress.total_chunks)
+                job.progress.elapsed_s = data.get("elapsed_s", job.progress.elapsed_s)
+                job.progress.eta_s = data.get("eta_s", job.progress.eta_s)
+
+        try:
+            cfg = build_config(speed=job.speed, preset=job.preset, backend="rubberband", uniform=job.uniform)
+            y = sio.load(job.input_path, cfg.sample_rate)
+            in_dur = len(y) / cfg.sample_rate
+
+            if job.is_cancelled():
+                raise CancelledError("Processing cancelled by user")
+
+            res = process(
+                y,
+                cfg.sample_rate,
+                cfg,
+                on_progress=on_prog,
+                cancel_check=job.is_cancelled,
+            )
+
+            stem = job.input_path.stem
+            out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}.wav"
+            out_path = job.output_dir / out_name
+            sio.save(out_path, res.audio, res.sr)
+            out_dur = len(res.audio) / res.sr
+
+            elapsed = time.perf_counter() - t_start
+
+            job.result = {
+                "status": "success",
+                "filename": out_name,
+                "output_path": str(out_path),
+                "audio_url": f"/api/v1/audio/{out_name}",
+                "speed": job.speed,
+                "preset": job.preset,
+                "uniform": job.uniform,
+                "input_duration_s": round(in_dur, 2),
+                "output_duration_s": round(out_dur, 2),
+                "compression_ratio": round(in_dur / max(out_dur, 0.001), 2),
+                "silence_fraction": res.notes.get("silence_fraction", 0.0),
+                "effective_speech_rate": res.notes.get("effective_speech_rate", job.speed),
+                "processing_time_s": round(elapsed, 2),
+                "timings": res.timings,
+                "chunked": res.notes.get("chunked", False),
+            }
+            job.status = "completed"
+            job.progress.stage = "completed"
+            job.progress.progress_pct = 100.0
+            job.progress.eta_s = 0.0
+            job.finished_at = time.time()
+            logger.info(f"[worker] Job {job.job_id} completed successfully in {elapsed:.1f}s")
+        except CancelledError:
+            job.status = "cancelled"
+            job.progress.stage = "cancelled"
+            job.finished_at = time.time()
+            logger.info(f"[worker] Job {job.job_id} successfully cancelled")
+        except Exception as e:
+            job.status = "failed"
+            job.progress.stage = "failed"
+            job.error = str(e)
+            job.finished_at = time.time()
+            logger.error(f"[worker] Job {job.job_id} failed: {e}", exc_info=True)
+
+
+job_queue = JobManager()

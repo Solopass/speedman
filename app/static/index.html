@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Speedman ⚡ Ultra-Speed Speech Engine</title>
+  <title>Speedman ⚡ Ultra-Speed Speech Studio</title>
   <style>
     :root {
       --bg: #0d1117;
@@ -33,7 +33,7 @@
     }
     .container {
       width: 100%;
-      max-width: 900px;
+      max-width: 920px;
       display: flex;
       flex-direction: column;
       gap: 1.25rem;
@@ -100,6 +100,7 @@
       display: flex;
       gap: 0.5rem;
       margin-bottom: 1rem;
+      flex-wrap: wrap;
     }
     .mode-pill {
       background: #21262d;
@@ -120,7 +121,7 @@
     .drop-zone {
       border: 2px dashed var(--border);
       border-radius: 8px;
-      padding: 2rem 1rem;
+      padding: 1.75rem 1rem;
       text-align: center;
       cursor: pointer;
       transition: all 0.2s ease;
@@ -132,7 +133,7 @@
     }
     .drop-zone p { color: var(--text-dim); font-size: 0.9rem; }
     .drop-zone .file-name { color: var(--accent); font-weight: 600; margin-top: 0.5rem; word-break: break-all; }
-    .path-input-container {
+    .input-pane {
       display: none;
       flex-direction: column;
       gap: 0.5rem;
@@ -150,6 +151,17 @@
     .text-input:focus {
       outline: none;
       border-color: var(--accent);
+    }
+    .select-input {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      width: 100%;
+      cursor: pointer;
     }
     .controls {
       display: grid;
@@ -239,18 +251,62 @@
     }
     .btn-run:hover { background: var(--accent-hover); }
     .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
+    
+    /* Progress Box & Cancellation */
+    .progress-box {
+      display: none;
+      margin-top: 1.25rem;
+      background: #1f242c;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem;
+    }
+    .progress-box.active {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .progress-bar-bg {
+      background: #30363d;
+      border-radius: 10px;
+      height: 8px;
+      width: 100%;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      background: var(--accent);
+      height: 100%;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    .btn-cancel {
+      background: #2a1b1b;
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      padding: 0.4rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      align-self: flex-start;
+      font-size: 0.8rem;
+    }
+    .btn-cancel:hover {
+      background: var(--danger);
+      color: #fff;
+    }
+
     .status-bar {
       display: none;
       margin-top: 1rem;
       padding: 0.75rem 1rem;
       border-radius: 6px;
       font-size: 0.9rem;
-    }
-    .status-bar.loading {
-      display: block;
-      background: #1f242c;
-      color: var(--warning);
-      border: 1px solid var(--warning);
     }
     .status-bar.success {
       display: block;
@@ -264,6 +320,8 @@
       color: var(--danger);
       border: 1px solid var(--danger);
     }
+
+    /* Player Card */
     .player-card {
       display: none;
     }
@@ -284,11 +342,50 @@
     @media (max-width: 600px) { .metrics-grid { grid-template-columns: 1fr 1fr; } }
     .metric-val { font-size: 1.2rem; font-weight: 700; color: #fff; }
     .metric-lbl { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; }
-    audio {
-      width: 100%;
-      border-radius: 6px;
-      margin-top: 0.5rem;
+    
+    /* Player Controls */
+    .player-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      flex-wrap: wrap;
     }
+    .skip-btn {
+      background: #21262d;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.4rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .skip-btn:hover { background: #30363d; color: var(--accent); }
+    .player-rate-group {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .btn-transcribe {
+      background: var(--accent-subtle);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 0.45rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .btn-transcribe:hover { background: var(--accent); color: #000; }
+
+    /* Comparison Section */
     .comparison-section {
       display: none;
     }
@@ -317,52 +414,13 @@
       justify-content: space-between;
       align-items: center;
     }
-    .track-title {
-      font-weight: 600;
-      color: #fff;
-    }
-    .track-badge {
-      font-size: 0.75rem;
-      background: rgba(255,255,255,0.1);
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: var(--text-dim);
-    }
-    .revealed-info {
-      font-size: 0.85rem;
-      color: var(--accent);
-      background: var(--accent-subtle);
-      padding: 4px 8px;
-      border-radius: 4px;
-      display: none;
-    }
-    .revealed-info.active {
-      display: block;
-    }
-    .btn-reveal {
-      background: #21262d;
-      border: 1px solid var(--accent);
-      color: var(--accent);
-      font-weight: 600;
-      padding: 0.6rem 1rem;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .btn-reveal:hover {
-      background: var(--accent);
-      color: #000;
-    }
-    footer {
-      text-align: center;
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      margin-top: auto;
-      padding-top: 2rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
+    .track-title { font-weight: 600; color: #fff; }
+    .track-badge { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: var(--text-dim); }
+    .revealed-info { font-size: 0.85rem; color: var(--accent); background: var(--accent-subtle); padding: 4px 8px; border-radius: 4px; display: none; }
+    .revealed-info.active { display: block; }
+    .btn-reveal { background: #21262d; border: 1px solid var(--accent); color: var(--accent); font-weight: 600; padding: 0.6rem 1rem; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+    .btn-reveal:hover { background: var(--accent); color: #000; }
+    footer { text-align: center; font-size: 0.8rem; color: var(--text-dim); margin-top: auto; padding-top: 2rem; display: flex; flex-direction: column; gap: 0.25rem; }
     footer a { color: var(--accent); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
   </style>
@@ -370,7 +428,7 @@
 <body>
   <div class="container">
     <header>
-      <h1>Speedman ⚡ <span class="badge">ON-DEMAND API</span></h1>
+      <h1>Speedman ⚡ <span class="badge">E-CORES 8–15</span></h1>
       <p class="subtitle">Speech-aware time compression that preserves intelligibility at 5×–6×</p>
       <div class="top-nav">
         <button class="nav-tab active" id="tabSingle" onclick="switchTab('single')">Compression Studio</button>
@@ -384,8 +442,11 @@
         <div class="input-mode-toggle">
           <button class="mode-pill active" id="pillUpload" onclick="setInputMode('upload')">Upload File</button>
           <button class="mode-pill" id="pillPath" onclick="setInputMode('path')">Workstation Path</button>
+          <button class="mode-pill" id="pillUrl" onclick="setInputMode('url')">YouTube / Web URL</button>
+          <button class="mode-pill" id="pillLibrary" onclick="setInputMode('library')">Media API Library</button>
         </div>
 
+        <!-- Mode 1: Drag-and-drop -->
         <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 0.5rem;">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -398,10 +459,29 @@
           <input type="file" id="fileInput" accept="audio/*" style="display: none;" onchange="handleFileSelect(this.files)">
         </div>
 
-        <div class="path-input-container" id="pathInputContainer">
+        <!-- Mode 2: Workstation Path -->
+        <div class="input-pane" id="pathInputContainer">
           <label>Audio File Path on Workstation (Windows or WSL format)</label>
-          <input type="text" class="text-input" id="pathInput" placeholder="e.g. D:\Audio\Speed\sample.wav or /mnt/d/Audio/podcast.mp3" oninput="handlePathInput(this.value)">
-          <p style="font-size: 0.75rem; color: var(--text-dim);">Files residing on D:\Audio, D:\Workspace, or D:\Output can be compressed instantly without browser upload overhead.</p>
+          <input type="text" class="text-input" id="pathInput" placeholder="e.g. D:\Audio\Speed\sample.wav or /mnt/d/Output/Audio/podcast.mp3" oninput="handlePathInput(this.value)">
+          <p style="font-size: 0.75rem; color: var(--text-dim);">Files residing on D:\Audio, D:\Workspace, or D:\Output process instantly without upload overhead.</p>
+        </div>
+
+        <!-- Mode 3: YouTube / Web URL -->
+        <div class="input-pane" id="urlInputContainer">
+          <label>Media URL (YouTube, SoundCloud, Podcast RSS, or Web Audio)</label>
+          <input type="text" class="text-input" id="urlInput" placeholder="https://www.youtube.com/watch?v=..." oninput="handleUrlInput(this.value)">
+          <p style="font-size: 0.75rem; color: var(--text-dim);">Audio will be extracted directly on workstation E-cores via Media API and yt-dlp.</p>
+        </div>
+
+        <!-- Mode 4: Media API Library -->
+        <div class="input-pane" id="libraryInputContainer">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label>Select Ingested Media from Media API (D:\Output\Audio)</label>
+            <span id="mediaApiStatusText" style="font-size: 0.75rem; color: var(--accent);">Checking Media API...</span>
+          </div>
+          <select class="select-input" id="librarySelect" onchange="handleLibrarySelect(this.value)">
+            <option value="">-- Choose a media file --</option>
+          </select>
         </div>
 
         <div class="controls">
@@ -430,13 +510,30 @@
           </label>
         </div>
 
-        <button class="btn-run" id="processBtn" onclick="processAudio()" disabled>
+        <button class="btn-run" id="processBtn" onclick="startProcessAudio()" disabled>
           Process with Speedman
         </button>
+
+        <!-- Live Async Progress Box -->
+        <div class="progress-box" id="progressBox">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 600; color: #fff;" id="progressStageText">Processing...</span>
+            <span style="font-size: 0.85rem; color: var(--accent); font-weight: 600;" id="progressPctText">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progressBarFill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="progressChunkText">Chunk 1/1</span>
+            <span id="progressEtaText">ETA: Calculating...</span>
+          </div>
+          <button class="btn-cancel" onclick="cancelCurrentJob()">Cancel Job</button>
+        </div>
 
         <div class="status-bar" id="statusBar"></div>
       </div>
 
+      <!-- Player Card -->
       <div class="card player-card" id="playerCard">
         <div class="metrics-grid">
           <div>
@@ -462,7 +559,29 @@
             <label>Compressed Result</label>
             <span id="outputLocationText" style="font-size: 0.8rem; color: var(--text-dim);"></span>
           </div>
-          <audio id="audioPlayer" controls></audio>
+          <audio id="audioPlayer" controls style="width: 100%; margin-top: 0.5rem;"></audio>
+
+          <!-- Ergonomic Controls: Skip buttons & player rate fine-tuner -->
+          <div class="player-controls">
+            <div style="display: flex; gap: 0.35rem;">
+              <button class="skip-btn" onclick="seekRelative(-10)">-10s</button>
+              <button class="skip-btn" onclick="seekRelative(-5)">-5s</button>
+              <button class="skip-btn" onclick="seekRelative(5)">+5s</button>
+              <button class="skip-btn" onclick="seekRelative(10)">+10s</button>
+            </div>
+
+            <div class="player-rate-group">
+              <span>Player Rate:</span>
+              <button class="skip-btn" onclick="setPlayerRate(0.8)">0.8×</button>
+              <button class="skip-btn" onclick="setPlayerRate(1.0)">1.0×</button>
+              <button class="skip-btn" onclick="setPlayerRate(1.1)">1.1×</button>
+              <button class="skip-btn" onclick="setPlayerRate(1.25)">1.25×</button>
+            </div>
+
+            <button class="btn-transcribe" id="btnTranscribe" onclick="transcribeSpedAudio()">
+              🎙️ Transcribe with Parakeet
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -472,14 +591,9 @@
       <div class="card">
         <h2 style="font-size: 1.25rem; font-weight: 600; color: #fff; margin-bottom: 0.5rem;">Blind A/B Intelligibility Evaluation</h2>
         <p style="font-size: 0.9rem; color: var(--text-dim); margin-bottom: 1rem;">
-          Compare your clip rendered eight ways: uniform stretch vs presets (Natural, Fast, Aggressive) at 4×, 5×, and 6× speeds.
-          Tracks are randomized so you evaluate effort without confirmation bias!
+          Compare your clip rendered across speeds (4×, 5×, 6×) and presets.
+          Tracks are randomized so you evaluate listening effort without confirmation bias!
         </p>
-
-        <div class="input-mode-toggle">
-          <button class="mode-pill active" id="pillCompareUpload" onclick="setCompareInputMode('upload')">Upload File</button>
-          <button class="mode-pill" id="pillComparePath" onclick="setCompareInputMode('path')">Workstation Path</button>
-        </div>
 
         <div class="drop-zone" id="dropZoneCompare" onclick="document.getElementById('fileInputCompare').click()">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 0.5rem;">
@@ -490,11 +604,6 @@
           <p>Drop audio file to generate comparison set</p>
           <div class="file-name" id="fileNameCompareDisplay"></div>
           <input type="file" id="fileInputCompare" accept="audio/*" style="display: none;" onchange="handleCompareFileSelect(this.files)">
-        </div>
-
-        <div class="path-input-container" id="pathInputCompareContainer">
-          <label>Audio File Path on Workstation</label>
-          <input type="text" class="text-input" id="pathInputCompare" placeholder="e.g. D:\Audio\Speed\sample.wav" oninput="handleComparePathInput(this.value)">
         </div>
 
         <div style="margin-top: 1rem;">
@@ -523,7 +632,7 @@
             <span style="font-weight: 600; color: var(--accent);">Original Reference Audio (1.0×)</span>
             <span style="font-size: 0.8rem; color: var(--text-dim);" id="originalDurationText"></span>
           </div>
-          <audio id="originalAudioPlayer" controls style="margin-top: 0.5rem;"></audio>
+          <audio id="originalAudioPlayer" controls style="width: 100%; margin-top: 0.5rem;"></audio>
         </div>
 
         <div class="track-list" id="compareTrackList"></div>
@@ -531,8 +640,8 @@
     </div>
 
     <footer>
-      <div>Running strictly on-demand on E-Cores (8–15) • Port 8081 • Zero-RAM Standby</div>
-      <div><a href="/docs" target="_blank">Interactive Swagger API Docs</a> • Saved to <code>D:\Audio\Speed</code></div>
+      <div>Running on E-Cores (8–15) • Port 8081 • Zero-RAM Standby • Multi-Hour Chunking</div>
+      <div><a href="/docs" target="_blank">Interactive Swagger API Docs</a> • Output in <code>D:\Audio\Speed</code></div>
     </footer>
   </div>
 
@@ -541,14 +650,16 @@
     let inputMode = 'upload';
     let selectedFile = null;
     let manualPath = '';
+    let manualUrl = '';
+    let selectedLibraryPath = '';
     let selectedPreset = 'fast';
 
-    let compareInputMode = 'upload';
     let selectedCompareFile = null;
-    let manualComparePath = '';
     let currentComparisonFolderId = null;
+    let activeJobId = null;
+    let jobPollTimer = null;
+    let lastGeneratedFilename = null;
 
-    // Navigation Tabs
     function switchTab(tab) {
       activeTab = tab;
       document.getElementById('tabSingle').classList.toggle('active', tab === 'single');
@@ -557,27 +668,21 @@
       document.getElementById('compareSection').classList.toggle('active', tab === 'compare');
     }
 
-    // Input mode toggle (single)
     function setInputMode(mode) {
       inputMode = mode;
-      document.getElementById('pillUpload').classList.toggle('active', mode === 'upload');
-      document.getElementById('pillPath').classList.toggle('active', mode === 'path');
+      ['Upload', 'Path', 'Url', 'Library'].forEach(m => {
+        const lower = m.toLowerCase();
+        document.getElementById('pill' + m).classList.toggle('active', mode === lower);
+      });
       document.getElementById('dropZone').style.display = mode === 'upload' ? 'block' : 'none';
       document.getElementById('pathInputContainer').style.display = mode === 'path' ? 'flex' : 'none';
+      document.getElementById('urlInputContainer').style.display = mode === 'url' ? 'flex' : 'none';
+      document.getElementById('libraryInputContainer').style.display = mode === 'library' ? 'flex' : 'none';
+
+      if (mode === 'library') loadMediaLibrary();
       validateSingleRunReady();
     }
 
-    // Input mode toggle (compare)
-    function setCompareInputMode(mode) {
-      compareInputMode = mode;
-      document.getElementById('pillCompareUpload').classList.toggle('active', mode === 'upload');
-      document.getElementById('pillComparePath').classList.toggle('active', mode === 'path');
-      document.getElementById('dropZoneCompare').style.display = mode === 'upload' ? 'block' : 'none';
-      document.getElementById('pathInputCompareContainer').style.display = mode === 'path' ? 'flex' : 'none';
-      validateCompareRunReady();
-    }
-
-    // Drag-and-Drop Single
     const dropZone = document.getElementById('dropZone');
     ['dragenter', 'dragover'].forEach(name => {
       dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }, false);
@@ -602,39 +707,44 @@
       validateSingleRunReady();
     }
 
+    function handleUrlInput(val) {
+      manualUrl = val.trim();
+      validateSingleRunReady();
+    }
+
+    function handleLibrarySelect(val) {
+      selectedLibraryPath = val;
+      validateSingleRunReady();
+    }
+
     function validateSingleRunReady() {
-      const isReady = (inputMode === 'upload' && selectedFile) || (inputMode === 'path' && manualPath.length > 0);
+      let isReady = false;
+      if (inputMode === 'upload') isReady = !!selectedFile;
+      else if (inputMode === 'path') isReady = manualPath.length > 0;
+      else if (inputMode === 'url') isReady = manualUrl.length > 5;
+      else if (inputMode === 'library') isReady = selectedLibraryPath.length > 0;
       document.getElementById('processBtn').disabled = !isReady;
     }
 
-    // Compare Drag-and-Drop
-    const dropZoneCompare = document.getElementById('dropZoneCompare');
-    ['dragenter', 'dragover'].forEach(name => {
-      dropZoneCompare.addEventListener(name, (e) => { e.preventDefault(); dropZoneCompare.classList.add('dragover'); }, false);
-    });
-    ['dragleave', 'drop'].forEach(name => {
-      dropZoneCompare.addEventListener(name, (e) => { e.preventDefault(); dropZoneCompare.classList.remove('dragover'); }, false);
-    });
-    dropZoneCompare.addEventListener('drop', (e) => {
-      const files = e.dataTransfer.files;
-      if (files.length) handleCompareFileSelect(files);
-    });
-
-    function handleCompareFileSelect(files) {
-      if (!files.length) return;
-      selectedCompareFile = files[0];
-      document.getElementById('fileNameCompareDisplay').textContent = 'Selected: ' + selectedCompareFile.name + ' (' + (selectedCompareFile.size / 1024 / 1024).toFixed(2) + ' MB)';
-      validateCompareRunReady();
-    }
-
-    function handleComparePathInput(val) {
-      manualComparePath = val.trim();
-      validateCompareRunReady();
-    }
-
-    function validateCompareRunReady() {
-      const isReady = (compareInputMode === 'upload' && selectedCompareFile) || (compareInputMode === 'path' && manualComparePath.length > 0);
-      document.getElementById('compareBtn').disabled = !isReady;
+    async function loadMediaLibrary() {
+      const statusText = document.getElementById('mediaApiStatusText');
+      const select = document.getElementById('librarySelect');
+      statusText.textContent = 'Checking Media API library...';
+      try {
+        const res = await fetch('/api/v1/media/library');
+        if (!res.ok) throw new Error('Could not load library');
+        const items = await res.json();
+        select.innerHTML = '<option value="">-- Choose a media file --</option>';
+        items.forEach(it => {
+          const opt = document.createElement('option');
+          opt.value = it.path;
+          opt.textContent = `${it.filename} (${it.size_mb} MB) - ${it.modified}`;
+          select.appendChild(opt);
+        });
+        statusText.textContent = `Found ${items.length} media files in Media API`;
+      } catch (e) {
+        statusText.textContent = 'Media API library offline';
+      }
     }
 
     function updateSpeed(val) {
@@ -653,70 +763,197 @@
       return m + ':' + (s < 10 ? '0' : '') + s;
     }
 
-    // Process Single Audio
-    async function processAudio() {
+    // Process single audio via Job Queue or URL Ingestion
+    async function startProcessAudio() {
       const processBtn = document.getElementById('processBtn');
       const statusBar = document.getElementById('statusBar');
+      const progressBox = document.getElementById('progressBox');
       const playerCard = document.getElementById('playerCard');
-      const audioPlayer = document.getElementById('audioPlayer');
 
       processBtn.disabled = true;
-      statusBar.className = 'status-bar loading';
-      statusBar.textContent = 'Processing audio through VAD, time stretching, and clarity chain...';
+      statusBar.style.display = 'none';
+      playerCard.classList.remove('active');
+
+      const speed = parseFloat(document.getElementById('speedSlider').value);
+      const uniform = document.getElementById('uniformToggle').checked;
+
+      progressBox.classList.add('active');
+      document.getElementById('progressStageText').textContent = 'Submitting job...';
+      document.getElementById('progressPctText').textContent = '0%';
+      document.getElementById('progressBarFill').style.width = '0%';
+      document.getElementById('progressEtaText').textContent = 'Calculating ETA...';
 
       try {
-        let res;
-        if (inputMode === 'upload') {
+        let jobId;
+        if (inputMode === 'url') {
+          document.getElementById('progressStageText').textContent = 'Downloading media from URL via yt-dlp...';
+          const res = await fetch('/api/v1/ingest/url', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url: manualUrl, speed: speed, preset: selectedPreset, uniform: uniform}),
+          });
+          if (!res.ok) throw new Error((await res.json()).detail || 'Failed to ingest URL');
+          jobId = (await res.json()).job_id;
+        } else if (inputMode === 'path' || inputMode === 'library') {
+          const targetPath = inputMode === 'path' ? manualPath : selectedLibraryPath;
+          const res = await fetch('/api/v1/jobs/compress', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({input_path: targetPath, speed: speed, preset: selectedPreset, uniform: uniform}),
+          });
+          if (!res.ok) throw new Error((await res.json()).detail || 'Failed to queue job');
+          jobId = (await res.json()).job_id;
+        } else {
+          // File upload via multipart
           const formData = new FormData();
           formData.append('file', selectedFile);
-          formData.append('speed', document.getElementById('speedSlider').value);
+          formData.append('speed', speed);
           formData.append('preset', selectedPreset);
-          formData.append('uniform', document.getElementById('uniformToggle').checked);
+          formData.append('uniform', uniform);
 
-          res = await fetch('/api/v1/compress', {
+          document.getElementById('progressStageText').textContent = 'Uploading & processing audio...';
+          const res = await fetch('/api/v1/compress', {
             method: 'POST',
             body: formData,
           });
-        } else {
-          res = await fetch('/api/v1/compress/json', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              input_path: manualPath,
-              speed: parseFloat(document.getElementById('speedSlider').value),
-              preset: selectedPreset,
-              uniform: document.getElementById('uniformToggle').checked,
-            }),
-          });
+          if (!res.ok) throw new Error((await res.json()).detail || 'Compression failed');
+          const data = await res.json();
+          renderCompletedResult(data);
+          progressBox.classList.remove('active');
+          processBtn.disabled = false;
+          return;
         }
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({detail: 'Processing failed'}));
-          throw new Error(err.detail || 'Processing failed');
-        }
-
-        const data = await res.json();
-        statusBar.className = 'status-bar success';
-        statusBar.textContent = 'Compression complete in ' + data.processing_time_s + 's (' + data.compression_ratio + 'x duration reduction)!';
-
-        document.getElementById('inDurVal').textContent = fmtTime(data.input_duration_s);
-        document.getElementById('outDurVal').textContent = fmtTime(data.output_duration_s);
-        document.getElementById('silenceVal').textContent = Math.round(data.silence_fraction * 100) + '%';
-        document.getElementById('effRateVal').textContent = data.effective_speech_rate + '×';
-        document.getElementById('outputLocationText').textContent = data.windows_output_path || data.output_path;
-
-        audioPlayer.src = data.audio_url;
-        playerCard.classList.add('active');
-        audioPlayer.play().catch(() => {});
+        activeJobId = jobId;
+        pollJobProgress(jobId);
       } catch (e) {
+        progressBox.classList.remove('active');
         statusBar.className = 'status-bar error';
         statusBar.textContent = 'Error: ' + e.message;
-      } finally {
         processBtn.disabled = false;
       }
     }
 
-    // Run Blind A/B Comparison
+    function pollJobProgress(jobId) {
+      if (jobPollTimer) clearInterval(jobPollTimer);
+      jobPollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/v1/jobs/${jobId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+
+          document.getElementById('progressStageText').textContent = `Stage: ${data.stage} (${data.speed}× ${data.preset})`;
+          const pct = Math.min(100, Math.max(0, data.progress_pct || 0));
+          document.getElementById('progressPctText').textContent = Math.round(pct) + '%';
+          document.getElementById('progressBarFill').style.width = pct + '%';
+
+          if (data.total_chunks > 1) {
+            document.getElementById('progressChunkText').textContent = `Chunk ${data.current_chunk} of ${data.total_chunks}`;
+          } else {
+            document.getElementById('progressChunkText').textContent = 'Single chunk';
+          }
+
+          if (data.eta_s !== null && data.eta_s !== undefined) {
+            document.getElementById('progressEtaText').textContent = `ETA: ${data.eta_s}s`;
+          }
+
+          if (data.status === 'completed') {
+            clearInterval(jobPollTimer);
+            document.getElementById('progressBox').classList.remove('active');
+            document.getElementById('processBtn').disabled = false;
+            renderCompletedResult(data.result);
+          } else if (data.status === 'cancelled' || data.status === 'failed') {
+            clearInterval(jobPollTimer);
+            document.getElementById('progressBox').classList.remove('active');
+            document.getElementById('processBtn').disabled = false;
+            const statusBar = document.getElementById('statusBar');
+            statusBar.className = 'status-bar error';
+            statusBar.textContent = data.status === 'cancelled' ? 'Job was cancelled by user' : ('Job failed: ' + data.error);
+          }
+        } catch (e) {}
+      }, 750);
+    }
+
+    async function cancelCurrentJob() {
+      if (!activeJobId) return;
+      try {
+        await fetch(`/api/v1/jobs/${activeJobId}/cancel`, {method: 'POST'});
+      } catch (e) {}
+    }
+
+    function renderCompletedResult(data) {
+      lastGeneratedFilename = data.filename;
+      const statusBar = document.getElementById('statusBar');
+      const playerCard = document.getElementById('playerCard');
+      const audioPlayer = document.getElementById('audioPlayer');
+
+      statusBar.className = 'status-bar success';
+      statusBar.textContent = `Compression complete in ${data.processing_time_s}s (${data.compression_ratio}x reduction)!`;
+
+      document.getElementById('inDurVal').textContent = fmtTime(data.input_duration_s);
+      document.getElementById('outDurVal').textContent = fmtTime(data.output_duration_s);
+      document.getElementById('silenceVal').textContent = Math.round(data.silence_fraction * 100) + '%';
+      document.getElementById('effRateVal').textContent = data.effective_speech_rate + '×';
+      document.getElementById('outputLocationText').textContent = data.windows_output_path || data.output_path;
+
+      audioPlayer.src = data.audio_url;
+      audioPlayer.playbackRate = 1.0;
+      playerCard.classList.add('active');
+      audioPlayer.play().catch(() => {});
+    }
+
+    // Player Controls
+    function seekRelative(seconds) {
+      const p = document.getElementById('audioPlayer');
+      if (p) p.currentTime = Math.max(0, Math.min(p.duration || 0, p.currentTime + seconds));
+    }
+
+    function setPlayerRate(rate) {
+      const p = document.getElementById('audioPlayer');
+      if (p) p.playbackRate = rate;
+    }
+
+    async function transcribeSpedAudio() {
+      if (!lastGeneratedFilename) return;
+      const btn = document.getElementById('btnTranscribe');
+      btn.disabled = true;
+      btn.textContent = 'Transcribing with Media API...';
+      try {
+        const res = await fetch(`/api/v1/transcribe/${encodeURIComponent(lastGeneratedFilename)}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({engine: 'parakeet'}),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Transcription failed');
+        btn.textContent = '✓ Transcription queued in Media API!';
+      } catch (e) {
+        alert('Could not transcribe: ' + e.message);
+        btn.textContent = '🎙️ Transcribe with Parakeet';
+      } finally {
+        setTimeout(() => { btn.disabled = false; btn.textContent = '🎙️ Transcribe with Parakeet'; }, 5000);
+      }
+    }
+
+    // Compare Section Drag-and-Drop
+    const dropZoneCompare = document.getElementById('dropZoneCompare');
+    ['dragenter', 'dragover'].forEach(name => {
+      dropZoneCompare.addEventListener(name, (e) => { e.preventDefault(); dropZoneCompare.classList.add('dragover'); }, false);
+    });
+    ['dragleave', 'drop'].forEach(name => {
+      dropZoneCompare.addEventListener(name, (e) => { e.preventDefault(); dropZoneCompare.classList.remove('dragover'); }, false);
+    });
+    dropZoneCompare.addEventListener('drop', (e) => {
+      const files = e.dataTransfer.files;
+      if (files.length) handleCompareFileSelect(files);
+    });
+
+    function handleCompareFileSelect(files) {
+      if (!files.length) return;
+      selectedCompareFile = files[0];
+      document.getElementById('fileNameCompareDisplay').textContent = 'Selected: ' + selectedCompareFile.name + ' (' + (selectedCompareFile.size / 1024 / 1024).toFixed(2) + ' MB)';
+      document.getElementById('compareBtn').disabled = false;
+    }
+
     async function runComparison() {
       const compareBtn = document.getElementById('compareBtn');
       const statusBar = document.getElementById('compareStatusBar');
@@ -728,29 +965,18 @@
       statusBar.textContent = 'Generating full randomized blind comparison set on E-cores...';
 
       const formData = new FormData();
-      if (compareInputMode === 'upload') {
-        formData.append('file', selectedCompareFile);
-      } else {
-        formData.append('input_path', manualComparePath);
-      }
+      formData.append('file', selectedCompareFile);
       formData.append('speeds_str', document.getElementById('compareSpeedsInput').value);
 
       try {
-        const res = await fetch('/api/v1/compare', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({detail: 'Comparison failed'}));
-          throw new Error(err.detail || 'Comparison failed');
-        }
+        const res = await fetch('/api/v1/compare', {method: 'POST', body: formData});
+        if (!res.ok) throw new Error((await res.json()).detail || 'Comparison failed');
 
         const data = await res.json();
         currentComparisonFolderId = data.folder_id;
 
         statusBar.className = 'status-bar success';
-        statusBar.textContent = 'Rendered ' + data.total_variants + ' variants in ' + data.processing_time_s + 's!';
+        statusBar.textContent = `Rendered ${data.total_variants} variants in ${data.processing_time_s}s!`;
 
         document.getElementById('compareFolderText').textContent = data.windows_folder_path || data.folder_path;
         document.getElementById('originalDurationText').textContent = fmtTime(data.original_duration_s);
@@ -803,24 +1029,26 @@
       }
     }
 
-    // Global keyboard shortcut: Space plays/pauses active audio
+    // Keyboard Shortcuts: Space, ArrowLeft, ArrowRight, J, L, K
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
-        const audios = Array.from(document.querySelectorAll('audio')).filter(a => !a.paused);
-        if (audios.length) {
-          e.preventDefault();
-          audios[0].pause();
-        } else {
-          const firstAudio = document.querySelector('audio[src]');
-          if (firstAudio) {
-            e.preventDefault();
-            firstAudio.play().catch(() => {});
-          }
-        }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      const audio = document.getElementById('audioPlayer');
+      if (!audio || !audio.src) return;
+
+      if (e.code === 'Space' || e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (audio.paused) audio.play().catch(() => {});
+        else audio.pause();
+      } else if (e.code === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        seekRelative(-5);
+      } else if (e.code === 'ArrowRight' || e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        seekRelative(5);
       }
     });
 
-    // Heartbeat Keep-Alive: Tells server you are actively in the app
+    // Keepalive Heartbeat
     const sessionId = 'speedman_' + Math.random().toString(36).substring(2, 10);
     function sendHeartbeat() {
       fetch('/api/v1/heartbeat', {

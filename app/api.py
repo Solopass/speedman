@@ -2,6 +2,7 @@
 
 Supports on-demand systemd socket activation, 0-RAM standby, auto-close watchdog,
 speech compression (1.01x to 30x), blind A/B comparison sets, interactive Web UI,
+asynchronous job queue with cancellation, long-file chunking, Media API integration,
 and Windows/WSL path interoperability.
 """
 from __future__ import annotations
@@ -30,6 +31,14 @@ from speedman import io as sio
 from speedman.config import PRESETS, build_config
 from speedman.pipeline import process
 from app.range_response import range_stream_file
+from app.queue import job_queue, SpeedmanJob
+from app.media_api import (
+    check_media_api_online,
+    get_media_api_health,
+    list_media_library,
+    extract_audio_from_url,
+    send_to_media_api_transcribe,
+)
 
 # Paths
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -101,12 +110,7 @@ def is_path_allowed(target: Path) -> bool:
 # --------------------------------------------------------------------------- Session & Watchdog
 
 class SessionManager:
-    """Tracks active browser tabs/clients and active audio processing jobs.
-    
-    GUARANTEE: The server NEVER shuts down while a browser tab/window is open,
-    and NEVER shuts down while audio jobs are running.
-    The 60-second idle countdown starts ONLY AFTER you exit out of the browser app!
-    """
+    """Tracks active browser tabs/clients and active audio processing jobs."""
     def __init__(self):
         self.active_jobs: int = 0
         self.sessions: dict[str, float] = {}
@@ -127,7 +131,6 @@ class SessionManager:
 
     def active_client_count(self) -> int:
         now = time.time()
-        # Active if heartbeat received within last 12 seconds
         self.sessions = {sid: ts for sid, ts in self.sessions.items() if now - ts < 12.0}
         return len(self.sessions)
 
@@ -142,15 +145,12 @@ class SessionManager:
     def should_shutdown(self) -> bool:
         if not self.auto_close or self.idle_timeout <= 0:
             return False
-        # NEVER shut down while jobs are running
-        if self.active_jobs > 0:
+        if self.active_jobs > 0 or job_queue.active_count() > 0:
             self.last_active_time = time.time()
             return False
-        # NEVER shut down while browser tab is open
         if self.active_client_count() > 0:
             self.last_active_time = time.time()
             return False
-        # Browser is closed and 0 active jobs: count down idle timeout
         idle = time.time() - self.last_active_time
         return idle >= self.idle_timeout
 
@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Speedman Speech Engine API",
     description="Speech-aware dynamic time compression microservice that preserves intelligibility at 5x–6x speeds.",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -226,6 +226,17 @@ class CompressRequest(BaseModel):
     output_filename: Optional[str] = None
 
 
+class IngestUrlRequest(BaseModel):
+    url: str = Field(..., description="YouTube or web media URL to extract and compress")
+    speed: float = Field(5.0, ge=1.01, le=30.0)
+    preset: str = Field("fast")
+    uniform: bool = Field(False)
+
+
+class TranscribeRequest(BaseModel):
+    engine: str = Field("parakeet", description="Speech-to-text engine: parakeet or whisper")
+
+
 class CompareRequest(BaseModel):
     input_path: str = Field(..., description="Local path to audio file on workstation")
     speeds: List[float] = Field(default_factory=lambda: [4.0, 5.0, 6.0], description="List of target speeds to compare")
@@ -242,12 +253,13 @@ def health():
     return {
         "status": "ok",
         "service": "speedman",
-        "version": "1.0.0",
-        "active_jobs": jobs.active_jobs,
+        "version": "1.1.0",
+        "active_jobs": jobs.active_jobs + job_queue.active_count(),
         "active_clients": jobs.active_client_count(),
         "idle_seconds": int(time.time() - jobs.last_active_time),
         "output_dir": str(OUTPUT_DIR),
         "windows_output_dir": to_windows_path(OUTPUT_DIR),
+        "media_api_online": check_media_api_online(),
     }
 
 
@@ -295,12 +307,10 @@ def list_presets():
 @app.get("/api/v1/audio/{filename:path}")
 def stream_audio(filename: str, request: Request):
     clean = filename.strip("/\\")
-    # First attempt exact relative path under OUTPUT_DIR
     target = (OUTPUT_DIR / clean).resolve()
     if target.is_file() and is_path_allowed(target):
         return range_stream_file(target, request, media_type="audio/wav")
 
-    # Fallback to searching by filename inside OUTPUT_DIR
     file_name_only = Path(clean).name
     candidates = [p for p in OUTPUT_DIR.rglob(file_name_only) if p.is_file() and is_path_allowed(p)]
     if candidates:
@@ -308,6 +318,8 @@ def stream_audio(filename: str, request: Request):
 
     raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
 
+
+# --------------------------------------------------------------------------- Synchronous Compression
 
 def _run_compression(src_path: Path, stem: str, speed: float, preset: str, uniform: bool) -> dict[str, Any]:
     if preset not in PRESETS:
@@ -349,6 +361,7 @@ def _run_compression(src_path: Path, stem: str, speed: float, preset: str, unifo
         "effective_speech_rate": res.notes.get("effective_speech_rate", speed),
         "processing_time_s": round(elapsed, 2),
         "timings": res.timings,
+        "chunked": res.notes.get("chunked", False),
     }
 
 
@@ -397,6 +410,127 @@ async def compress_audio_json(req: CompressRequest):
         jobs.dec_job()
 
 
+# --------------------------------------------------------------------------- Asynchronous Job Queue
+
+@app.post("/api/v1/jobs/compress")
+async def queue_compress_job(req: CompressRequest):
+    """Queues a non-blocking background compression job."""
+    src_path = normalize_path(req.input_path).resolve()
+    if not is_path_allowed(src_path):
+        raise HTTPException(status_code=403, detail=f"Path '{src_path}' is outside permitted workstation roots")
+    if not src_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Input file not found: {src_path}")
+
+    job = job_queue.submit(
+        input_path=src_path,
+        speed=req.speed,
+        preset=req.preset,
+        uniform=req.uniform,
+        output_dir=OUTPUT_DIR,
+    )
+    return {
+        "status": "queued",
+        "job_id": job.job_id,
+        "input_filename": src_path.name,
+        "speed": req.speed,
+        "preset": req.preset,
+    }
+
+
+@app.get("/api/v1/jobs/{job_id}")
+def get_job_status(job_id: str):
+    """Fetches real-time status, progress %, stage, and measured ETA for a job."""
+    job = job_queue.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return job.to_dict()
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def cancel_job_route(job_id: str):
+    """Cancels a queued or running job, immediately stopping processing on E-cores."""
+    ok = job_queue.cancel_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return {"status": "cancellation_requested", "job_id": job_id}
+
+
+@app.get("/api/v1/jobs")
+def list_recent_jobs():
+    """Lists recent compression jobs and their status."""
+    return job_queue.list_jobs(limit=25)
+
+
+# --------------------------------------------------------------------------- Media API Integration
+
+@app.get("/api/v1/media/status")
+def media_api_status():
+    """Checks whether Media API (127.0.0.1:8080) is online."""
+    online = check_media_api_online()
+    health_data = get_media_api_health() if online else None
+    return {
+        "online": online,
+        "url": "http://127.0.0.1:8080",
+        "health": health_data,
+    }
+
+
+@app.get("/api/v1/media/library")
+def media_api_library():
+    """Lists audio and video files available in Media API's output directories."""
+    return list_media_library(limit=40)
+
+
+@app.post("/api/v1/ingest/url")
+async def ingest_url_and_compress(req: IngestUrlRequest):
+    """Extracts audio from a YouTube/web URL and queues it for Speedman compression."""
+    try:
+        downloaded_path = extract_audio_from_url(req.url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to extract audio from URL: {e}")
+
+    job = job_queue.submit(
+        input_path=downloaded_path,
+        speed=req.speed,
+        preset=req.preset,
+        uniform=req.uniform,
+        output_dir=OUTPUT_DIR,
+    )
+    return {
+        "status": "queued",
+        "job_id": job.job_id,
+        "input_filename": downloaded_path.name,
+        "speed": req.speed,
+        "preset": req.preset,
+    }
+
+
+@app.post("/api/v1/transcribe/{filename:path}")
+def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeRequest] = None):
+    """Sends an audio file from Speedman's output to Media API for Speech-To-Text."""
+    req = req or TranscribeRequest()
+    clean = filename.strip("/\\")
+    target = (OUTPUT_DIR / clean).resolve()
+    if not target.is_file() or not is_path_allowed(target):
+        # Search by filename
+        candidates = [p for p in OUTPUT_DIR.rglob(Path(clean).name) if p.is_file() and is_path_allowed(p)]
+        if not candidates:
+            raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
+        target = candidates[0]
+
+    try:
+        res = send_to_media_api_transcribe(target, engine=req.engine)
+        return {
+            "status": "forwarded_to_media_api",
+            "file": target.name,
+            "media_api_response": res,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# --------------------------------------------------------------------------- Blind A/B Evaluation
+
 @app.post("/api/v1/compare")
 async def compare_audio(
     file: Optional[UploadFile] = File(None),
@@ -432,18 +566,15 @@ async def compare_audio(
         dest_dir = COMPARE_DIR / folder_name
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Reference audio
         y = sio.load(src_path, 24000)
         sio.save(dest_dir / "original.wav", y, 24000)
 
-        # Build variants
         variants = []
         for sp in speeds:
             variants.append((f"{sp:g}x_uniform", sp, "fast", True))
             for pr in ("natural", "fast", "aggressive"):
                 variants.append((f"{sp:g}x_{pr}", sp, pr, False))
 
-        # Randomize for blind testing
         random.seed(int(time.time()))
         shuffled = variants.copy()
         random.shuffle(shuffled)

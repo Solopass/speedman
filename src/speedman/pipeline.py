@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -19,22 +20,33 @@ class Result:
     notes: dict
 
 
-MAX_MINUTES_UNCHUNKED = 90.0
-"""Chunking is not built yet (CLAUDE.md open question). Rather than dying in an
-allocator halfway through someone's audiobook, refuse up front and say why."""
+CHUNK_THRESHOLD_MINUTES = 30.0
 
 
-def process(y: np.ndarray, sr: int, cfg: Config, verbose: bool = False,
-            on_progress=None, annotation=None) -> Result:
-    minutes = len(y) / sr / 60
-    if minutes > MAX_MINUTES_UNCHUNKED:
-        raise ValueError(
-            f"this file is {minutes:.0f} minutes long, and speedman does not yet "
-            f"process files over {MAX_MINUTES_UNCHUNKED:.0f} minutes in one pass "
-            "(chunked processing is not built yet -- see CLAUDE.md).\n"
-            "Split it first, e.g.:\n"
-            "  ffmpeg -i input.mp3 -f segment -segment_time 3600 -c copy part%03d.mp3"
+def process(
+    y: np.ndarray,
+    sr: int,
+    cfg: Config,
+    verbose: bool = False,
+    on_progress: Optional[Callable[[str | dict], None]] = None,
+    annotation=None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    chunk_target_min: float = 25.0,
+) -> Result:
+    minutes = len(y) / sr / 60.0
+
+    # For files longer than 30 minutes, process in sequential pause-aligned chunks
+    # to clamp peak memory and allow arbitrary audiobook/podcast length.
+    if minutes > CHUNK_THRESHOLD_MINUTES and annotation is None:
+        from .chunking import process_chunked
+        out, t, notes = process_chunked(
+            y, sr, cfg,
+            target_chunk_min=chunk_target_min,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
         )
+        return Result(audio=out, sr=sr, timings=t, notes=notes)
+
     t = {}
     notes: dict = {}
     backend = get_backend(cfg.backend)
@@ -42,6 +54,10 @@ def process(y: np.ndarray, sr: int, cfg: Config, verbose: bool = False,
     def step(msg):
         if on_progress:
             on_progress(msg)
+
+    if cancel_check and cancel_check():
+        from .chunking import CancelledError
+        raise CancelledError("Processing cancelled by user")
 
     step("analysing")
     t0 = time.perf_counter()
@@ -55,9 +71,6 @@ def process(y: np.ndarray, sr: int, cfg: Config, verbose: bool = False,
                 "non-uniform compression. Use --backend rubberband, or pass --uniform "
                 "to run this backend as a constant-rate control."
             )
-        # The annotation depends only on the audio, never on the requested speed
-        # or preset, so callers rendering several variants of one clip can build
-        # it once and pass it in.
         ann = annotation or analyze.annotate_vad(
             y, sr,
             protect_window_ms=cfg.ratemap.protect_window_ms,
@@ -67,10 +80,13 @@ def process(y: np.ndarray, sr: int, cfg: Config, verbose: bool = False,
         notes.update(tm.notes)
         notes["mode"] = "non-uniform"
         notes["n_anchors"] = len(tm.anchors)
-        # s predicts lever 1's payoff: speech ends up near N*(1-0.6s)
         s = tm.notes.get("silence_fraction", 0.0)
-        notes["effective_speech_rate"] = round(cfg.speed * (1 - 0.6 * s), 2)
+        notes["effective_speech_rate"] = round(cfg.speed * (1.0 - 0.6 * s), 2)
     t["analyze"] = time.perf_counter() - t0
+
+    if cancel_check and cancel_check():
+        from .chunking import CancelledError
+        raise CancelledError("Processing cancelled by user")
 
     step("stretching")
     t0 = time.perf_counter()
@@ -79,6 +95,10 @@ def process(y: np.ndarray, sr: int, cfg: Config, verbose: bool = False,
     else:
         out = backend.stretch_map(y, sr, tm)
     t["stretch"] = time.perf_counter() - t0
+
+    if cancel_check and cancel_check():
+        from .chunking import CancelledError
+        raise CancelledError("Processing cancelled by user")
 
     step("post chain")
     t0 = time.perf_counter()

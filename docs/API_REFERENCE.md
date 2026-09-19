@@ -15,11 +15,19 @@ Speedman is an on-demand, speech-aware time compression microservice that makes 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Web Studio Cockpit (HTML dashboard with single & blind A/B evaluation) |
-| `GET` | `/health` | Service health, version, active jobs, active clients, and output directory |
+| `GET` | `/health` | Service health, version, active jobs, active clients, output directory, and Media API connectivity |
 | `GET` | `/docs` | OpenAPI / Swagger interactive documentation |
 | `GET` | `/api/v1/presets` | List DSP presets (`natural`, `fast`, `aggressive`, `max`) and ratemap parameters |
 | `POST` | `/api/v1/compress` | Multipart form audio compression (file upload or workstation path) |
-| `POST` | `/api/v1/compress/json` | JSON body audio compression for workstation paths |
+| `POST` | `/api/v1/compress/json` | JSON body synchronous audio compression for workstation paths |
+| `POST` | `/api/v1/jobs/compress` | Queue non-blocking asynchronous compression job on E-cores (returns `job_id`) |
+| `GET` | `/api/v1/jobs/{job_id}` | Poll real-time progress %, chunk count, stage, and measured ETA |
+| `POST` | `/api/v1/jobs/{job_id}/cancel` | Cancel queued or active compression job, immediately terminating processing |
+| `GET` | `/api/v1/jobs` | List recent background compression jobs |
+| `GET` | `/api/v1/media/status` | Probe Media API (127.0.0.1:8080) health and connectivity |
+| `GET` | `/api/v1/media/library` | Browse media available in Media API output directories (`D:\Output\Audio\`) |
+| `POST` | `/api/v1/ingest/url` | Extract audio from YouTube or web media URL via yt-dlp and queue Speedman compression |
+| `POST` | `/api/v1/transcribe/{filename:path}` | Forward sped-up audio to Media API for Parakeet Speech-To-Text transcription |
 | `POST` | `/api/v1/compare` | Generate full randomized blind A/B comparison set with `KEY.txt` and `key.json` |
 | `GET` | `/api/v1/comparisons` | List recent comparison evaluation sets |
 | `GET` | `/api/v1/comparisons/{folder_id}/key` | Reveal the key mapping for a blind evaluation set |

@@ -30,7 +30,7 @@ def test_health():
     data = resp.json()
     assert data["status"] == "ok"
     assert data["service"] == "speedman"
-    assert data["version"] == "1.0.0"
+    assert data["version"] == "1.1.0"
     assert "windows_output_dir" in data
 
 
@@ -39,7 +39,7 @@ def test_root_dashboard_html():
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     assert "Speedman" in resp.text
-    assert "Ultra-Speed Speech Engine" in resp.text
+    assert "Ultra-Speed Speech Studio" in resp.text
 
 
 def test_presets():
