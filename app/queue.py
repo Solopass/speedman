@@ -43,6 +43,7 @@ class SpeedmanJob:
         preset: str = "fast",
         uniform: bool = False,
         output_dir: Optional[Path] = None,
+        output_format: str = "wav",
     ):
         self.job_id = job_id
         self.input_path = input_path
@@ -50,6 +51,7 @@ class SpeedmanJob:
         self.preset = preset
         self.uniform = uniform
         self.output_dir = output_dir or Path("/mnt/d/Audio/Speed")
+        self.output_format = output_format.lower().lstrip(".")
 
         self.status = "queued"  # queued | processing | completed | failed | cancelled
         self.progress = JobProgress()
@@ -83,6 +85,7 @@ class SpeedmanJob:
             "speed": self.speed,
             "preset": self.preset,
             "uniform": self.uniform,
+            "output_format": self.output_format,
             "input_filename": self.input_path.name,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -109,6 +112,7 @@ class JobManager:
         preset: str = "fast",
         uniform: bool = False,
         output_dir: Optional[Path] = None,
+        output_format: str = "wav",
     ) -> SpeedmanJob:
         job_id = f"job_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job = SpeedmanJob(
@@ -118,13 +122,14 @@ class JobManager:
             preset=preset,
             uniform=uniform,
             output_dir=output_dir,
+            output_format=output_format,
         )
         with self._lock:
             self.jobs[job_id] = job
             self._trim_history()
 
         self.job_queue.put(job)
-        logger.info(f"[queue] Job {job_id} queued for {input_path.name} ({speed}x {preset})")
+        logger.info(f"[queue] Job {job_id} queued for {input_path.name} ({speed}x {preset}, format={job.output_format})")
         return job
 
     def get_job(self, job_id: str) -> Optional[SpeedmanJob]:
@@ -207,7 +212,9 @@ class JobManager:
             )
 
             stem = job.input_path.stem
-            out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}.wav"
+            fmt = job.output_format.lower().lstrip(".")
+            ext = f".{fmt}" if fmt in ("wav", "mp3", "m4a", "flac") else ".wav"
+            out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}{ext}"
             out_path = job.output_dir / out_name
             sio.save(out_path, res.audio, res.sr)
             out_dur = len(res.audio) / res.sr

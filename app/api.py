@@ -223,6 +223,7 @@ class CompressRequest(BaseModel):
     speed: float = Field(5.0, ge=1.01, le=30.0, description="Speed multiplier (e.g. 5.0 for 5x)")
     preset: str = Field("fast", description="Preset: natural | fast | aggressive | max")
     uniform: bool = Field(False, description="Uniform constant-rate stretch (control mode)")
+    format: str = Field("wav", description="Audio output format: wav | mp3 | m4a | flac")
     output_filename: Optional[str] = None
 
 
@@ -231,6 +232,7 @@ class IngestUrlRequest(BaseModel):
     speed: float = Field(5.0, ge=1.01, le=30.0)
     preset: str = Field("fast")
     uniform: bool = Field(False)
+    format: str = Field("wav", description="Audio output format: wav | mp3 | m4a | flac")
 
 
 class TranscribeRequest(BaseModel):
@@ -304,24 +306,37 @@ def list_presets():
     }
 
 
+def get_audio_media_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".mp3":
+        return "audio/mpeg"
+    if ext in (".m4a", ".mp4", ".aac"):
+        return "audio/mp4"
+    if ext == ".flac":
+        return "audio/flac"
+    if ext in (".ogg", ".opus"):
+        return "audio/ogg"
+    return "audio/wav"
+
+
 @app.get("/api/v1/audio/{filename:path}")
 def stream_audio(filename: str, request: Request):
     clean = filename.strip("/\\")
     target = (OUTPUT_DIR / clean).resolve()
     if target.is_file() and is_path_allowed(target):
-        return range_stream_file(target, request, media_type="audio/wav")
+        return range_stream_file(target, request, media_type=get_audio_media_type(target))
 
     file_name_only = Path(clean).name
     candidates = [p for p in OUTPUT_DIR.rglob(file_name_only) if p.is_file() and is_path_allowed(p)]
     if candidates:
-        return range_stream_file(candidates[0], request, media_type="audio/wav")
+        return range_stream_file(candidates[0], request, media_type=get_audio_media_type(candidates[0]))
 
     raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
 
 
 # --------------------------------------------------------------------------- Synchronous Compression
 
-def _run_compression(src_path: Path, stem: str, speed: float, preset: str, uniform: bool) -> dict[str, Any]:
+def _run_compression(src_path: Path, stem: str, speed: float, preset: str, uniform: bool, format: str = "wav") -> dict[str, Any]:
     if preset not in PRESETS:
         raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'. Available: {list(PRESETS.keys())}")
 
@@ -338,7 +353,9 @@ def _run_compression(src_path: Path, stem: str, speed: float, preset: str, unifo
 
     res = process(y, cfg.sample_rate, cfg)
 
-    out_name = f"{stem}_{speed:g}x_{preset}{'_uniform' if uniform else ''}.wav"
+    fmt = format.lower().lstrip(".")
+    ext = f".{fmt}" if fmt in ("wav", "mp3", "m4a", "flac") else ".wav"
+    out_name = f"{stem}_{speed:g}x_{preset}{'_uniform' if uniform else ''}{ext}"
     out_path = OUTPUT_DIR / out_name
     sio.save(out_path, res.audio, res.sr)
     out_dur = len(res.audio) / res.sr
@@ -354,6 +371,7 @@ def _run_compression(src_path: Path, stem: str, speed: float, preset: str, unifo
         "speed": speed,
         "preset": preset,
         "uniform": uniform,
+        "format": fmt,
         "input_duration_s": round(in_dur, 2),
         "output_duration_s": round(out_dur, 2),
         "compression_ratio": round(in_dur / max(out_dur, 0.001), 2),
@@ -372,6 +390,7 @@ async def compress_audio_multipart(
     speed: float = Form(5.0),
     preset: str = Form("fast"),
     uniform: bool = Form(False),
+    format: str = Form("wav"),
 ):
     jobs.inc_job()
     temp_in = None
@@ -389,7 +408,7 @@ async def compress_audio_multipart(
         else:
             raise HTTPException(status_code=400, detail="Must provide either 'file' upload or 'input_path'")
 
-        return _run_compression(src_path, stem, speed, preset, uniform)
+        return _run_compression(src_path, stem, speed, preset, uniform, format=format)
     finally:
         if temp_in and temp_in.exists():
             try:
@@ -405,7 +424,7 @@ async def compress_audio_json(req: CompressRequest):
     try:
         src_path = normalize_path(req.input_path).resolve()
         stem = src_path.stem
-        return _run_compression(src_path, stem, req.speed, req.preset, req.uniform)
+        return _run_compression(src_path, stem, req.speed, req.preset, req.uniform, format=req.format)
     finally:
         jobs.dec_job()
 
@@ -427,6 +446,7 @@ async def queue_compress_job(req: CompressRequest):
         preset=req.preset,
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
+        output_format=req.format,
     )
     return {
         "status": "queued",
@@ -434,6 +454,7 @@ async def queue_compress_job(req: CompressRequest):
         "input_filename": src_path.name,
         "speed": req.speed,
         "preset": req.preset,
+        "format": job.output_format,
     }
 
 
@@ -495,6 +516,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
         preset=req.preset,
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
+        output_format=req.format,
     )
     return {
         "status": "queued",
@@ -502,6 +524,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
         "input_filename": downloaded_path.name,
         "speed": req.speed,
         "preset": req.preset,
+        "format": job.output_format,
     }
 
 

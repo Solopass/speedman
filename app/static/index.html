@@ -502,6 +502,15 @@
               <button class="btn-preset" onclick="setPreset('max', this)">Max</button>
             </div>
           </div>
+
+          <div class="control-group">
+            <label>Output Format</label>
+            <div class="preset-buttons">
+              <button class="btn-preset active" id="fmtWav" onclick="setFormat('wav', this)">WAV (Lossless)</button>
+              <button class="btn-preset" id="fmtMp3" onclick="setFormat('mp3', this)">MP3 (192k Compact)</button>
+              <button class="btn-preset" id="fmtM4a" onclick="setFormat('m4a', this)">M4A (Apple/Mobile)</button>
+            </div>
+          </div>
         </div>
 
         <div class="toggles">
@@ -518,14 +527,14 @@
         <div class="progress-box" id="progressBox">
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <span style="font-weight: 600; color: #fff;" id="progressStageText">Processing...</span>
-            <span style="font-size: 0.85rem; color: var(--accent); font-weight: 600;" id="progressPctText">0%</span>
+            <span style="font-size: 0.85rem; color: var(--accent);" id="progressPctText">0%</span>
           </div>
-          <div class="progress-bar-bg">
+          <div class="progress-bar-track">
             <div class="progress-bar-fill" id="progressBarFill"></div>
           </div>
-          <div class="progress-meta">
-            <span id="progressChunkText">Chunk 1/1</span>
-            <span id="progressEtaText">ETA: Calculating...</span>
+          <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim);">
+            <span id="progressChunkText">Single chunk</span>
+            <span id="progressEtaText">Calculating ETA...</span>
           </div>
           <button class="btn-cancel" onclick="cancelCurrentJob()">Cancel Job</button>
         </div>
@@ -559,6 +568,10 @@
             <label>Compressed Result</label>
             <span id="outputLocationText" style="font-size: 0.8rem; color: var(--text-dim);"></span>
           </div>
+
+          <!-- Waveform Canvas -->
+          <canvas id="waveformCanvas" width="880" height="60" style="width: 100%; height: 60px; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; margin-top: 0.5rem; cursor: pointer; display: block;"></canvas>
+
           <audio id="audioPlayer" controls style="width: 100%; margin-top: 0.5rem;"></audio>
 
           <!-- Ergonomic Controls: Skip buttons & player rate fine-tuner -->
@@ -581,6 +594,10 @@
             <button class="btn-transcribe" id="btnTranscribe" onclick="transcribeSpedAudio()">
               🎙️ Transcribe with Parakeet
             </button>
+          </div>
+
+          <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem; text-align: center;">
+            Shortcuts: <kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">Space</kbd> Play/Pause &bull; <kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">J</kbd>/<kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">L</kbd> or <kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">&larr;</kbd>/<kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">&rarr;</kbd> &plusmn;5s &bull; <kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">[</kbd>/<kbd style="background: #21262d; padding: 2px 5px; border-radius: 3px; color: #fff;">]</kbd> &plusmn;0.1× Player Rate
           </div>
         </div>
       </div>
@@ -751,9 +768,17 @@
       document.getElementById('speedDisplay').textContent = parseFloat(val).toFixed(1) + '×';
     }
 
+    let selectedFormat = 'wav';
+
     function setPreset(preset, btn) {
       selectedPreset = preset;
-      document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.preset-buttons button[onclick^="setPreset"]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    function setFormat(fmt, btn) {
+      selectedFormat = fmt;
+      document.querySelectorAll('#fmtWav, #fmtMp3, #fmtM4a').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
     }
 
@@ -790,7 +815,7 @@
           const res = await fetch('/api/v1/ingest/url', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url: manualUrl, speed: speed, preset: selectedPreset, uniform: uniform}),
+            body: JSON.stringify({url: manualUrl, speed: speed, preset: selectedPreset, uniform: uniform, format: selectedFormat}),
           });
           if (!res.ok) throw new Error((await res.json()).detail || 'Failed to ingest URL');
           jobId = (await res.json()).job_id;
@@ -799,7 +824,7 @@
           const res = await fetch('/api/v1/jobs/compress', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({input_path: targetPath, speed: speed, preset: selectedPreset, uniform: uniform}),
+            body: JSON.stringify({input_path: targetPath, speed: speed, preset: selectedPreset, uniform: uniform, format: selectedFormat}),
           });
           if (!res.ok) throw new Error((await res.json()).detail || 'Failed to queue job');
           jobId = (await res.json()).job_id;
@@ -810,6 +835,7 @@
           formData.append('speed', speed);
           formData.append('preset', selectedPreset);
           formData.append('uniform', uniform);
+          formData.append('format', selectedFormat);
 
           document.getElementById('progressStageText').textContent = 'Uploading & processing audio...';
           const res = await fetch('/api/v1/compress', {
@@ -881,6 +907,55 @@
       } catch (e) {}
     }
 
+    let waveformBars = [];
+    function initWaveform() {
+      const canvas = document.getElementById('waveformCanvas');
+      if (!canvas) return;
+      waveformBars = [];
+      for (let i = 0; i < 110; i++) {
+        const isPause = Math.random() < 0.18;
+        const h = isPause ? Math.random() * 6 + 2 : Math.random() * 40 + 10;
+        waveformBars.push(h);
+      }
+      drawWaveform(0);
+
+      canvas.onclick = (e) => {
+        const p = document.getElementById('audioPlayer');
+        if (!p || !p.duration) return;
+        const rect = canvas.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        p.currentTime = ratio * p.duration;
+      };
+    }
+
+    function drawWaveform(progress) {
+      const canvas = document.getElementById('waveformCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const numBars = waveformBars.length;
+      if (!numBars) return;
+      const barWidth = w / numBars;
+
+      for (let i = 0; i < numBars; i++) {
+        const x = i * barWidth;
+        const barH = waveformBars[i];
+        const y = (h - barH) / 2;
+        const isPlayed = (i / numBars) <= progress;
+
+        ctx.fillStyle = isPlayed ? '#58a6ff' : '#30363d';
+        ctx.fillRect(x + 1, y, Math.max(1, barWidth - 2), barH);
+      }
+
+      // Playhead line
+      const playheadX = progress * w;
+      ctx.fillStyle = '#79c0ff';
+      ctx.fillRect(playheadX - 1, 0, 2, h);
+    }
+
     function renderCompletedResult(data) {
       lastGeneratedFilename = data.filename;
       const statusBar = document.getElementById('statusBar');
@@ -899,6 +974,14 @@
       audioPlayer.src = data.audio_url;
       audioPlayer.playbackRate = 1.0;
       playerCard.classList.add('active');
+
+      initWaveform();
+      audioPlayer.ontimeupdate = () => {
+        if (audioPlayer.duration) {
+          drawWaveform(audioPlayer.currentTime / audioPlayer.duration);
+        }
+      };
+
       audioPlayer.play().catch(() => {});
     }
 
@@ -912,6 +995,32 @@
       const p = document.getElementById('audioPlayer');
       if (p) p.playbackRate = rate;
     }
+
+    // Global keyboard shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+      const player = document.getElementById('audioPlayer');
+      if (!player || !player.src) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (player.paused) player.play(); else player.pause();
+      } else if (e.code === 'KeyJ' || e.code === 'ArrowLeft') {
+        e.preventDefault();
+        seekRelative(-5);
+      } else if (e.code === 'KeyL' || e.code === 'ArrowRight') {
+        e.preventDefault();
+        seekRelative(5);
+      } else if (e.code === 'BracketLeft') {
+        e.preventDefault();
+        const r = Math.max(0.5, Math.round((player.playbackRate - 0.1) * 10) / 10);
+        setPlayerRate(r);
+      } else if (e.code === 'BracketRight') {
+        e.preventDefault();
+        const r = Math.min(2.0, Math.round((player.playbackRate + 0.1) * 10) / 10);
+        setPlayerRate(r);
+      }
+    });
 
     async function transcribeSpedAudio() {
       if (!lastGeneratedFilename) return;

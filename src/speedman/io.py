@@ -73,7 +73,16 @@ def save(path: str | Path, y: np.ndarray, sr: int = WORKING_SR) -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td) / "out.wav"
         sf.write(str(tmp), y, sr, subtype="PCM_16")
-        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(tmp), str(path)]
+        ext = path.suffix.lower()
+        if ext == ".mp3":
+            # 192kbps LAME with full 20kHz cutoff to retain consonant transients at 5x-6x speed
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-c:a", "libmp3lame", "-b:a", "192k", "-cutoff", "20000", str(path)]
+        elif ext in (".m4a", ".aac", ".mp4"):
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-c:a", "aac", "-b:a", "192k", str(path)]
+        elif ext == ".flac":
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(tmp), "-c:a", "flac", str(path)]
+        else:
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(tmp), str(path)]
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg failed writing {path.name}:\n{proc.stderr.decode()[:500]}")

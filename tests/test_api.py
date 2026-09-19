@@ -167,3 +167,25 @@ def test_heartbeat_and_disconnect():
 
     disc = client.post("/api/v1/client-disconnect", json={"session_id": session_id})
     assert disc.status_code == 200
+
+
+def test_compress_mp3_format(synthetic_wav):
+    payload = {
+        "input_path": str(synthetic_wav),
+        "speed": 5.0,
+        "preset": "fast",
+        "format": "mp3",
+    }
+    resp = client.post("/api/v1/compress/json", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["filename"].endswith(".mp3")
+    assert data["format"] == "mp3"
+    assert Path(data["output_path"]).is_file()
+
+    # Verify audio streaming returns audio/mpeg
+    audio_resp = client.get(data["audio_url"])
+    assert audio_resp.status_code in (200, 206)
+    assert "audio/mpeg" in audio_resp.headers["content-type"]
+
