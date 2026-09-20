@@ -471,7 +471,15 @@
         <div class="input-pane" id="urlInputContainer">
           <label>Media URL (YouTube, SoundCloud, Podcast RSS, or Web Audio)</label>
           <input type="text" class="text-input" id="urlInput" placeholder="https://www.youtube.com/watch?v=..." oninput="handleUrlInput(this.value)">
-          <p style="font-size: 0.75rem; color: var(--text-dim);">Audio will be extracted directly on workstation E-cores via Media API and yt-dlp.</p>
+          <p style="font-size: 0.75rem; color: var(--text-dim);">Audio is extracted on workstation E-cores via Media API's yt-dlp.</p>
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-dim); cursor: pointer; margin-top: 0.4rem;">
+            <input type="checkbox" id="includeVideoToggle" style="width: auto;">
+            Also download the video so I can watch it
+          </label>
+          <p style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem; padding-left: 1.5rem;">
+            Cached temporarily and deleted when you close the player, unless you hit Save.
+            The audio and transcript are always kept.
+          </p>
         </div>
 
         <!-- Mode 4: Media API Library -->
@@ -545,6 +553,24 @@
       </div>
 
       <!-- Player Card -->
+      <!-- Temporary video viewer: discarded on close unless saved -->
+      <div class="card" id="videoCard" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div>
+            <h3 style="font-size: 1.05rem; color: #fff;">Source Video</h3>
+            <p style="font-size: 0.75rem; color: var(--text-dim);" id="videoMetaText"></p>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-preset" id="videoSaveBtn" onclick="saveCachedVideo()">💾 Save</button>
+            <button class="btn-preset" id="videoCloseBtn" onclick="discardCachedVideo()"
+                    title="Delete the video. Audio and transcript are kept.">✕ Close</button>
+          </div>
+        </div>
+        <video id="videoPlayer" controls preload="metadata"
+               style="width: 100%; border-radius: 6px; background: #000; max-height: 60vh;"></video>
+        <div class="status-bar" id="videoStatusBar"></div>
+      </div>
+
       <div class="card player-card" id="playerCard">
         <div class="metrics-grid">
           <div>
@@ -924,7 +950,11 @@
           const res = await fetch('/api/v1/ingest/url', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url: manualUrl, speed: speed, preset: selectedPreset, uniform: uniform, format: selectedFormat}),
+            body: JSON.stringify({
+              url: manualUrl, speed: speed, preset: selectedPreset, uniform: uniform,
+              format: selectedFormat,
+              include_video: document.getElementById('includeVideoToggle').checked,
+            }),
           });
           if (!res.ok) throw new Error((await res.json()).detail || 'Failed to ingest URL');
           jobId = (await res.json()).job_id;
@@ -1069,8 +1099,90 @@
       ctx.fillRect(playheadX - 1, 0, 2, h);
     }
 
+    // ----------------------------------------------------------------- Video viewer
+    let currentVideoId = null;
+
+    async function showCachedVideo(videoId) {
+      currentVideoId = videoId;
+      const card = document.getElementById('videoCard');
+      const player = document.getElementById('videoPlayer');
+      const status = document.getElementById('videoStatusBar');
+      status.className = 'status-bar';
+      status.textContent = '';
+      document.getElementById('videoSaveBtn').disabled = false;
+
+      try {
+        const res = await fetch('/api/v1/video/' + encodeURIComponent(videoId));
+        if (!res.ok) throw new Error('not found');
+        const meta = await res.json();
+        document.getElementById('videoMetaText').textContent =
+          `${meta.filename} — ${meta.size_mb} MB` +
+          (meta.pre_existed ? ' · already in your library' : ' · temporary, deleted on close');
+        player.src = meta.stream_url;
+        card.style.display = 'block';
+      } catch (e) {
+        card.style.display = 'none';
+        currentVideoId = null;
+      }
+    }
+
+    function hideVideoCard() {
+      const player = document.getElementById('videoPlayer');
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+      document.getElementById('videoCard').style.display = 'none';
+      currentVideoId = null;
+    }
+
+    async function discardCachedVideo() {
+      if (!currentVideoId) return hideVideoCard();
+      const id = currentVideoId;
+      // Stop playback before deleting so the file isn't held open mid-unlink.
+      document.getElementById('videoPlayer').pause();
+      try {
+        const res = await fetch('/api/v1/video/' + encodeURIComponent(id), {method: 'DELETE'});
+        const data = await res.json();
+        hideVideoCard();
+        const bar = document.getElementById('statusBar');
+        bar.className = 'status-bar success';
+        bar.textContent = data.library_copy_kept
+          ? 'Temporary copy deleted — the version in your library is untouched.'
+          : 'Video deleted. Audio and transcript kept.';
+      } catch (e) {
+        const status = document.getElementById('videoStatusBar');
+        status.className = 'status-bar error';
+        status.textContent = 'Could not delete: ' + e.message;
+      }
+    }
+
+    async function saveCachedVideo() {
+      if (!currentVideoId) return;
+      const btn = document.getElementById('videoSaveBtn');
+      const status = document.getElementById('videoStatusBar');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/video/' + encodeURIComponent(currentVideoId) + '/save',
+                                {method: 'POST'});
+        if (!res.ok) throw new Error((await res.json()).detail || 'save failed');
+        const data = await res.json();
+        status.className = 'status-bar success';
+        status.textContent = (data.status === 'already_saved'
+          ? 'Already in your library: '
+          : 'Saved to ') + (data.windows_path || data.path);
+        // It has left the cache, so there is nothing left to discard.
+        currentVideoId = null;
+        document.getElementById('videoCloseBtn').textContent = '✕ Close';
+      } catch (e) {
+        status.className = 'status-bar error';
+        status.textContent = 'Could not save: ' + e.message;
+        btn.disabled = false;
+      }
+    }
+
     function renderCompletedResult(data) {
       lastGeneratedFilename = data.filename;
+      if (data.video_id) showCachedVideo(data.video_id); else hideVideoCard();
       const statusBar = document.getElementById('statusBar');
       const playerCard = document.getElementById('playerCard');
       const audioPlayer = document.getElementById('audioPlayer');

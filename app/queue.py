@@ -47,10 +47,13 @@ class SpeedmanJob:
         output_dir: Optional[Path] = None,
         output_format: str = "wav",
         source_url: Optional[str] = None,
+        include_video: bool = False,
     ):
         if input_path is None and not source_url:
             raise ValueError("a job needs either an input_path or a source_url")
         self.job_id = job_id
+        self.include_video = include_video
+        self.video_id: Optional[str] = None
         # Resolved by the worker when the job starts from a URL: downloading a two-hour
         # podcast inside the HTTP request would hold the connection open for minutes.
         self.source_url = source_url
@@ -96,6 +99,7 @@ class SpeedmanJob:
             "output_format": self.output_format,
             "input_filename": self.input_path.name if self.input_path else None,
             "source_url": self.source_url,
+            "video_id": self.video_id,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -123,6 +127,7 @@ class JobManager:
         output_dir: Optional[Path] = None,
         output_format: str = "wav",
         source_url: Optional[str] = None,
+        include_video: bool = False,
     ) -> SpeedmanJob:
         job_id = f"job_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job = SpeedmanJob(
@@ -134,6 +139,7 @@ class JobManager:
             output_dir=output_dir,
             output_format=output_format,
             source_url=source_url,
+            include_video=include_video,
         )
         with self._lock:
             self.jobs[job_id] = job
@@ -188,6 +194,33 @@ class JobManager:
             self._execute_job(job)
             self.job_queue.task_done()
 
+    @staticmethod
+    def _stage_video_for(job: SpeedmanJob, on_prog) -> Path:
+        """Download the video, move it into Speedman's cache, and register it.
+
+        The move matters: discard() only ever deletes inside the cache, so keeping temp
+        videos out of D:\\Output\\Videos means a bug here cannot reach the media library.
+        A file that predated our request is copied instead of moved -- it belongs to the
+        user and must stay where they left it.
+        """
+        import shutil as _shutil
+
+        from app import video as video_cache
+        from app.media_api import download_video_from_url
+
+        downloaded, pre_existed = download_video_from_url(job.source_url, on_progress=on_prog)
+
+        video_cache.VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        target = video_cache.VIDEO_CACHE_DIR / downloaded.name
+        if pre_existed:
+            _shutil.copy2(str(downloaded), str(target))
+        else:
+            _shutil.move(str(downloaded), str(target))
+
+        entry = video_cache.register(target, source_url=job.source_url, pre_existed=pre_existed)
+        job.video_id = entry.video_id
+        return target
+
     def _execute_job(self, job: SpeedmanJob):
         job.status = "processing"
         job.started_at = time.time()
@@ -210,9 +243,14 @@ class JobManager:
         try:
             if job.source_url and job.input_path is None:
                 job.progress.stage = "downloading"
-                from app.media_api import extract_audio_from_url
+                if job.include_video:
+                    # One download, two uses: sio.load decodes audio straight out of the
+                    # mp4 via ffmpeg, so asking for video does not cost a second fetch.
+                    job.input_path = self._stage_video_for(job, on_prog)
+                else:
+                    from app.media_api import extract_audio_from_url
 
-                job.input_path = extract_audio_from_url(job.source_url, on_progress=on_prog)
+                    job.input_path = extract_audio_from_url(job.source_url, on_progress=on_prog)
                 logger.info(f"[worker] Job {job.job_id} downloaded {job.input_path.name}")
                 if job.is_cancelled():
                     raise CancelledError("Processing cancelled by user")
@@ -268,6 +306,7 @@ class JobManager:
                 "processing_time_s": round(elapsed, 2),
                 "timings": res.timings,
                 "chunked": res.notes.get("chunked", False),
+                "video_id": job.video_id,
             }
             job.status = "completed"
             job.progress.stage = "completed"

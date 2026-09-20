@@ -186,6 +186,63 @@ def _download_via_media_api(url: str, on_progress=None) -> Path:
     raise RuntimeError(f"Media API reported success but produced no readable file: {outputs}")
 
 
+def download_video_from_url(url: str, on_progress=None) -> tuple[Path, bool]:
+    """Download the video (not just audio) for previewing.
+
+    Returns (path, pre_existed). `pre_existed` is True when Media API handed back a file
+    that was already on disk before we asked -- it deduplicates by URL, so re-downloading
+    something from last week returns the old file untouched. The caller must not delete
+    such a file: it is the user's, not ours.
+    """
+    url = validate_ingest_url(url)
+    if not check_media_api_online():
+        raise RuntimeError(
+            f"Cannot download video: Media API ({MEDIA_API_BASE}) is unreachable. "
+            "It owns the yt-dlp this workstation uses."
+        )
+
+    requested_at = time.time()
+    logger.info(f"[media_api] Requesting video download: {url}")
+
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(
+            f"{MEDIA_API_BASE}/api/v1/download",
+            json={"url": url, "audio_only": False, "format": "mp4"},
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise RuntimeError(f"Media API rejected the download ({resp.status_code}): {resp.text[:300]}")
+        job_id = resp.json().get("job_id")
+        if not job_id:
+            raise RuntimeError(f"Media API returned no job_id: {resp.text[:200]}")
+
+        deadline = time.monotonic() + DOWNLOAD_TIMEOUT_S
+        while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"video download timed out after {DOWNLOAD_TIMEOUT_S:.0f}s")
+            status = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}").json()
+            state = str(status.get("status", "")).lower()
+            if on_progress:
+                on_progress({"stage": "downloading video",
+                             "progress_pct": float(status.get("progress_percent") or 0.0)})
+            if state == "completed":
+                break
+            if state in ("failed", "error", "cancelled"):
+                raise RuntimeError(f"Media API video download {state}: {status.get('error') or 'no detail'}")
+            time.sleep(1.5)
+
+    outputs = status.get("output_files") or {}
+    for key in ("video", "media", "audio"):
+        candidate = outputs.get(key)
+        if candidate and Path(candidate).is_file():
+            path = Path(candidate)
+            # A file older than our request was already there; Media API deduplicates by
+            # URL and returns the existing copy rather than fetching it again.
+            pre_existed = path.stat().st_mtime < requested_at
+            logger.info(f"[media_api] Video at {path} (pre_existed={pre_existed})")
+            return path, pre_existed
+    raise RuntimeError(f"Media API reported success but produced no readable file: {outputs}")
+
+
 def _download_via_local_ytdlp(url: str) -> Path:
     """Fallback for when Media API is down. Requires a local yt-dlp, which this machine
     does not currently have -- the error says so rather than leaving a bare 'not found'."""

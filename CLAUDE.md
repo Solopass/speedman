@@ -63,6 +63,19 @@ The download runs **inside the job**, not inside the request — a long podcast 
 otherwise hold the HTTP connection open for minutes. Clients poll `/api/v1/jobs/{id}`
 and see a `downloading` stage before `stretching`.
 
+Tick **"also download the video"** and the job fetches video instead of audio-only and
+stages it in `D:\Audio\Speed\video-cache\`; `sio.load` decodes the audio straight out of
+the mp4, so there is no second download. The player offers Save (moves it to
+`D:\Output\Videos`) and Close (deletes it). **Default is delete; audio and transcripts are
+never touched.**
+
+`app/video.py` is the only code in the repo that deletes user-visible files. Its rules:
+deletion is confined to the cache directory and re-checked at the moment of unlinking;
+everything in the cache is Speedman's own copy, so ownership is settled by moving/copying
+the file in rather than by bookkeeping at delete time; a video the library already had is
+copied (not moved) and `pre_existed` then makes *saving* a no-op. Startup sweeps unsaved
+entries older than 24h. Do not relax any of this — `D:\Output\Videos` is a real library.
+
 ## Invariants worth not regressing
 
 - **`ALLOWED_ROOTS` gates compression *inputs*, never HTTP *outputs*.** It spans `D:\Workspace`, `D:\AI` and `D:\OBVLT`, so validating a served path against it is a directory traversal. Anything reachable over HTTP goes through `resolve_output_file()`, which is confined to `OUTPUT_DIR`.

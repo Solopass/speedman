@@ -185,6 +185,17 @@ async def idle_watchdog():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Leftover videos from a session that never came back. Only touches Speedman's own
+    # cache, and only entries older than a day.
+    try:
+        from app import video as video_cache
+
+        swept = video_cache.sweep()
+        if swept["deleted"] or swept["forgotten"]:
+            logger.info(f"[startup] video cache sweep: {swept}")
+    except Exception as e:
+        logger.warning(f"[startup] video cache sweep skipped: {e}")
+
     watchdog = asyncio.create_task(idle_watchdog())
     yield
     watchdog.cancel()
@@ -249,6 +260,11 @@ class IngestUrlRequest(BaseModel):
     preset: str = Field("fast")
     uniform: bool = Field(False)
     format: str = Field("wav", description="Audio output format: wav | mp3 | m4a | flac")
+    include_video: bool = Field(
+        False,
+        description="Also fetch the video so it can be watched. Cached temporarily and "
+                    "discarded unless saved; the audio and transcript are always kept.",
+    )
 
 
 class TranscribeRequest(BaseModel):
@@ -345,6 +361,15 @@ def require_output_format(fmt: str) -> str:
         return sio.normalize_output_format(fmt)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def get_video_media_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".webm":
+        return "video/webm"
+    if ext == ".mkv":
+        return "video/x-matroska"
+    return "video/mp4"
 
 
 def get_audio_media_type(path: Path) -> str:
@@ -577,6 +602,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
         output_format=fmt,
+        include_video=req.include_video,
     )
     return {
         "status": "queued",
@@ -585,7 +611,74 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
         "speed": req.speed,
         "preset": req.preset,
         "format": job.output_format,
+        "include_video": req.include_video,
     }
+
+
+# --------------------------------------------------------------------------- Video cache
+#
+# Watch a downloaded video, then keep it or let it go. Default is to discard: the audio
+# and transcript are the point, the video is scratch. See app/video.py for why deletion
+# is confined to Speedman's own cache directory.
+
+@app.get("/api/v1/video")
+def list_cached_videos():
+    from app import video as video_cache
+
+    return video_cache.list_cached()
+
+
+@app.get("/api/v1/video/{video_id}")
+def get_cached_video(video_id: str):
+    from app import video as video_cache
+
+    try:
+        return video_cache.get(video_id).public()
+    except video_cache.VideoNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/v1/video/{video_id}/stream")
+def stream_cached_video(video_id: str, request: Request):
+    """Range-served so the browser can seek without downloading the whole file."""
+    from app import video as video_cache
+
+    try:
+        entry = video_cache.get(video_id)
+    except video_cache.VideoNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    target = entry.path.resolve()
+    if not target.is_file() or not is_within(target, video_cache.VIDEO_CACHE_DIR):
+        raise HTTPException(status_code=404, detail="Cached video file is gone")
+    return range_stream_file(target, request, media_type=get_video_media_type(target))
+
+
+@app.post("/api/v1/video/{video_id}/save")
+def save_cached_video(video_id: str):
+    """Keep it: moves the video into the media library."""
+    from app import video as video_cache
+
+    try:
+        return video_cache.save(video_id)
+    except video_cache.VideoNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except video_cache.UnsafeDelete as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/video/{video_id}")
+def discard_cached_video(video_id: str):
+    """The default when the viewer is closed. Only ever deletes Speedman's own copy."""
+    from app import video as video_cache
+
+    try:
+        return video_cache.discard(video_id)
+    except video_cache.VideoNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except video_cache.UnsafeDelete as e:
+        logger.error(f"[video] refused unsafe delete: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/transcribe/{filename:path}")
