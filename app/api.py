@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from speedman import io as sio
 from speedman.config import PRESETS, build_config
 from speedman.pipeline import process
+from app import timemap_store, transcript as transcript_sync
 from app.paths import normalize_path, to_windows_path, is_within
 from app.range_response import range_stream_file
 from app.queue import job_queue, SpeedmanJob
@@ -278,6 +279,12 @@ class TranscribeRequest(BaseModel):
                     "this as 'source_path'; omit it and the source is derived from the "
                     "output filename.",
     )
+    sync_to_output: Optional[str] = Field(
+        None,
+        description="A compressed filename to sync the finished transcript against. The "
+                    "1x timestamps are warped through that output's time map and written "
+                    "as <stem>.vtt and <stem>.synced.json beside it.",
+    )
 
 
 class CompareRequest(BaseModel):
@@ -419,6 +426,12 @@ def get_video_media_type(path: Path) -> str:
 
 def get_audio_media_type(path: Path) -> str:
     ext = path.suffix.lower()
+    # Synced transcripts live beside the audio and are served by the same route. A .vtt
+    # handed back as audio/wav is silently ignored by <track>.
+    if ext == ".vtt":
+        return "text/vtt"
+    if ext == ".json":
+        return "application/json"
     if ext == ".mp3":
         return "audio/mpeg"
     if ext in (".m4a", ".mp4", ".aac"):
@@ -472,6 +485,8 @@ def _run_compression(
     out_path = OUTPUT_DIR / out_name
     sio.save(out_path, res.audio, res.sr)
     out_dur = len(res.audio) / res.sr
+    # Keep the map so a 1x transcript can be synced to this output later.
+    timemap_store.save_quietly(out_name, res.time_map, speed, res.sr)
 
     elapsed = time.perf_counter() - t_start
 
@@ -732,6 +747,67 @@ def discard_cached_video(video_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SyncTranscriptRequest(BaseModel):
+    output_name: str = Field(..., description="Compressed filename to sync against")
+    transcript_path: Optional[str] = Field(
+        None,
+        description="Media API's transcript JSON. Defaults to the sibling "
+                    "'<source stem>.transcript.json' that Media API writes.",
+    )
+    source_path: Optional[str] = Field(None, description="Source audio, if not derivable")
+
+
+# MUST stay above /api/v1/transcribe/{filename:path}. FastAPI matches in declaration
+# order and a :path parameter is greedy, so a later /sync would be read as a filename --
+# which it silently was, returning a plain transcription instead of a sync.
+@app.post("/api/v1/transcribe/sync")
+def sync_transcript_to_output(req: SyncTranscriptRequest):
+    """Warp a 1x transcript onto a compressed output's timeline.
+
+    Produces <stem>.vtt beside the audio, which players load as a subtitle track, plus
+    <stem>.synced.json with sample-accurate positions. Naive `t / N` drifts 0.08-0.23s
+    because pauses compress harder than speech; the stored map is exact.
+    """
+    if req.transcript_path:
+        transcript_json = normalize_path(req.transcript_path).resolve()
+    else:
+        source = (normalize_path(req.source_path).resolve() if req.source_path
+                  else find_source_for_output(req.output_name))
+        if source is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide transcript_path or source_path -- the transcript could "
+                       "not be located from the output name alone.")
+        transcript_json = source.with_suffix(".transcript.json")
+
+    if not is_path_allowed(transcript_json):
+        raise HTTPException(status_code=403, detail=f"'{transcript_json}' is outside permitted roots")
+    if not transcript_json.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No transcript at {transcript_json}. Transcribe the source first, and "
+                   "wait for the Media API job to finish before syncing.")
+
+    try:
+        result = transcript_sync.sync_to_output(transcript_json, req.output_name, OUTPUT_DIR)
+    except timemap_store.TimeMapNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "status": "synced",
+        "output": req.output_name,
+        "segments": result.segment_count,
+        "source_duration_s": result.source_duration_s,
+        "output_duration_s": result.output_duration_s,
+        "vtt_path": str(result.vtt_path),
+        "windows_vtt_path": to_windows_path(result.vtt_path),
+        "json_path": str(result.json_path),
+        "vtt_url": f"/api/v1/audio/{result.vtt_path.name}",
+    }
+
+
 @app.post("/api/v1/transcribe/{filename:path}")
 def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeRequest] = None):
     """Transcribes the ORIGINAL audio a compressed file was made from.
@@ -777,16 +853,27 @@ def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeReque
 
     try:
         res = send_to_media_api_transcribe(source, engine=req.engine)
-        return {
-            "status": "forwarded_to_media_api",
-            "file": source.name,
-            "source_path": str(source),
-            "windows_source_path": to_windows_path(source),
-            "transcribed": "source_audio_at_1x",
-            "media_api_response": res,
-        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+    payload = {
+        "status": "forwarded_to_media_api",
+        "file": source.name,
+        "source_path": str(source),
+        "windows_source_path": to_windows_path(source),
+        "transcribed": "source_audio_at_1x",
+        "media_api_response": res,
+    }
+
+    if req.sync_to_output:
+        # Media API transcribes asynchronously, so the transcript is not on disk yet.
+        # The client polls /api/v1/transcribe/sync once its job reports completion.
+        payload["sync"] = {
+            "status": "pending",
+            "output": req.sync_to_output,
+            "hint": "POST /api/v1/transcribe/sync when the Media API job completes",
+        }
+    return payload
 
 
 # --------------------------------------------------------------------------- Blind A/B Evaluation

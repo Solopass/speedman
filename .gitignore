@@ -47,3 +47,6 @@ eval/clips/
 eval/cache.json
 eval/listening/
 video-cache/
+.timemaps/
+*.vtt
+*.synced.json

@@ -18,6 +18,10 @@ class Result:
     sr: int
     timings: dict
     notes: dict
+    time_map: "ratemap.TimeMap | None" = None
+    """Where every input instant landed in the output. Kept so a 1x transcript can be
+    warped onto the compressed timeline -- naive t/N drifts 0.08-0.23s because pauses
+    compress harder than speech. None for uniform mode, where t/N is exact by definition."""
 
 
 CHUNK_THRESHOLD_MINUTES = 30.0
@@ -39,13 +43,13 @@ def process(
     # to clamp peak memory and allow arbitrary audiobook/podcast length.
     if minutes > CHUNK_THRESHOLD_MINUTES and annotation is None:
         from .chunking import process_chunked
-        out, t, notes = process_chunked(
+        out, t, notes, tm = process_chunked(
             y, sr, cfg,
             target_chunk_min=chunk_target_min,
             on_progress=on_progress,
             cancel_check=cancel_check,
         )
-        return Result(audio=out, sr=sr, timings=t, notes=notes)
+        return Result(audio=out, sr=sr, timings=t, notes=notes, time_map=tm)
 
     t = {}
     notes: dict = {}
@@ -120,4 +124,4 @@ def process(
         for k, v in notes.items():
             print(f"  {k:<22} {v}")
 
-    return Result(audio=out, sr=sr, timings=t, notes=notes)
+    return Result(audio=out, sr=sr, timings=t, notes=notes, time_map=tm)

@@ -385,3 +385,28 @@ def test_find_source_for_output_recovers_the_stem(tmp_path, monkeypatch):
     assert api_mod.find_source_for_output("episode_5x_fast.wav") == source
     assert api_mod.find_source_for_output("episode_6x_max_uniform.flac") == source
     assert api_mod.find_source_for_output("unrelated.wav") is None
+
+
+def test_sync_route_is_not_swallowed_by_the_filename_route():
+    """/api/v1/transcribe/{filename:path} is greedy and declared after /sync. If the order
+    ever flips, 'sync' is read as a filename and the endpoint silently performs a plain
+    transcription instead -- returning 200 with none of the sync fields, which is exactly
+    how this was first missed."""
+    resp = client.post("/api/v1/transcribe/sync", json={"output_name": "no_such_output.wav"})
+    # Reaching the sync handler means a 4xx about the missing transcript or map, never a
+    # transcription result.
+    assert resp.status_code in (400, 404)
+    assert "media_api_response" not in resp.json()
+
+
+def test_sync_requires_a_locatable_transcript():
+    resp = client.post("/api/v1/transcribe/sync", json={"output_name": "mystery.wav"})
+    assert resp.status_code == 400
+    assert "transcript_path" in resp.json()["detail"]
+
+
+def test_sync_rejects_a_transcript_outside_permitted_roots():
+    resp = client.post("/api/v1/transcribe/sync", json={
+        "output_name": "x_5x_fast.wav", "transcript_path": "/etc/passwd",
+    })
+    assert resp.status_code == 403

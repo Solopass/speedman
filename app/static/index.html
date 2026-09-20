@@ -595,6 +595,10 @@
              background: #2a2418; border: 1px solid #9e6a03; border-radius: 6px;
              font-size: 0.8rem; color: #e3b341;"></div>
 
+        <div id="syncedTranscriptBox" style="display: none; margin-top: 0.75rem; padding: 0.6rem 0.85rem;
+             background: #1b271f; border: 1px solid var(--success); border-radius: 6px;
+             font-size: 0.8rem; color: var(--text-dim);"></div>
+
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <label>Compressed Result</label>
@@ -1189,6 +1193,8 @@
     function renderCompletedResult(data) {
       lastGeneratedFilename = data.filename;
       lastSourcePath = data.source_path || null;
+      const syncBox = document.getElementById('syncedTranscriptBox');
+      if (syncBox) syncBox.style.display = 'none';
       if (data.video_id) showCachedVideo(data.video_id); else hideVideoCard();
       const statusBar = document.getElementById('statusBar');
       const playerCard = document.getElementById('playerCard');
@@ -1288,6 +1294,53 @@
       }
     });
 
+    // Media API transcribes asynchronously, so the transcript appears on disk a while
+    // after the request returns. Retry the sync until it lands rather than making the
+    // user come back and press something else.
+    async function pollForSyncedTranscript(outputName, sourcePath, btn, attempts = 40) {
+      for (let i = 0; i < attempts; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const res = await fetch('/api/v1/transcribe/sync', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({output_name: outputName, source_path: sourcePath}),
+          });
+          if (!res.ok) continue;   // 404 until Media API has written the transcript
+          const data = await res.json();
+          showSyncedTranscript(data);
+          if (btn) btn.textContent = `✓ Synced ${data.segments} lines to ${data.output_duration_s}s`;
+          return data;
+        } catch (e) { /* keep waiting */ }
+      }
+      if (btn) btn.textContent = '⚠ Transcribed, but sync timed out';
+      return null;
+    }
+
+    function showSyncedTranscript(data) {
+      const box = document.getElementById('syncedTranscriptBox');
+      if (!box) return;
+      box.style.display = 'block';
+      box.innerHTML =
+        `<strong style="color: var(--success);">Speed-synced transcript</strong><br>` +
+        `${data.segments} lines warped onto the ${data.output_duration_s}s timeline ` +
+        `(source was ${data.source_duration_s}s).<br>` +
+        `<code style="font-size:0.75rem;">${data.windows_vtt_path}</code>`;
+
+      // The video player can load it as a subtitle track for free.
+      const video = document.getElementById('videoPlayer');
+      if (video && video.getAttribute('src')) {
+        [...video.querySelectorAll('track')].forEach(t => t.remove());
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = 'Synced transcript';
+        track.srclang = 'en';
+        track.src = data.vtt_url;
+        track.default = true;
+        video.appendChild(track);
+      }
+    }
+
     async function transcribeSpedAudio() {
       if (!lastGeneratedFilename) return;
       const btn = document.getElementById('btnTranscribe');
@@ -1302,7 +1355,8 @@
           body: JSON.stringify({engine: 'parakeet', source_path: lastSourcePath}),
         });
         if (!res.ok) throw new Error((await res.json()).detail || 'Transcription failed');
-        btn.textContent = '✓ Transcription queued in Media API!';
+        btn.textContent = '✓ Transcribing… will sync when ready';
+        pollForSyncedTranscript(lastGeneratedFilename, lastSourcePath, btn);
       } catch (e) {
         alert('Could not transcribe: ' + e.message);
         btn.textContent = '🎙️ Transcribe original with Parakeet';

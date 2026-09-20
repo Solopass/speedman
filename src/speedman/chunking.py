@@ -137,6 +137,12 @@ def process_chunked(
     effective_rates = []
     estimated_rates = []
     clamped_fractions = []
+    # Global time map, stitched as we go: each chunk's map is relative to its own start,
+    # so both axes need the running offsets applied before they are concatenated.
+    map_in_bounds: List[np.ndarray] = []
+    map_out_pos: List[np.ndarray] = []
+    map_rates: List[np.ndarray] = []
+    out_offset = 0.0
 
     for idx, (c_start, c_end) in enumerate(chunks, start=1):
         if cancel_check and cancel_check():
@@ -198,6 +204,17 @@ def process_chunked(
             c_out[:fade_len] *= fade_in
             c_out[-fade_len:] *= fade_in[::-1]
 
+        # Stitch this chunk's map into the global one before moving on. The output axis
+        # advances by the rendered length, not by the map's own total, so any drift
+        # introduced by the post chain stays confined to one chunk instead of
+        # accumulating across the file.
+        if tm is not None:
+            seg_out = tm.segment_output_lengths()
+            map_in_bounds.append(c_start + tm.seg_bounds[:-1].astype(np.float64))
+            map_out_pos.append(out_offset + np.concatenate([[0.0], np.cumsum(seg_out)[:-1]]))
+            map_rates.append(tm.rates)
+        out_offset += len(c_out)
+
         out_pieces.append(c_out)
         chunk_durations_out.append(len(c_out) / sr)
 
@@ -249,4 +266,38 @@ def process_chunked(
         "output_duration_s": round(len(output_audio) / sr, 2),
     }
 
-    return output_audio, timings, notes
+    stitched = _stitch_time_map(map_in_bounds, map_out_pos, map_rates,
+                                n_samples, len(output_audio), sr)
+    return output_audio, timings, notes, stitched
+
+
+def _stitch_time_map(in_bounds, out_pos, rates, n_in: int, n_out: int, sr: int):
+    """One TimeMap spanning the whole file, from the per-chunk maps.
+
+    Returns None in uniform mode, where there is no map to stitch and t/N is exact.
+    """
+    from .ratemap import TimeMap
+
+    if not in_bounds:
+        return None
+
+    bounds = np.concatenate(in_bounds + [np.array([float(n_in)])])
+    positions = np.concatenate(out_pos + [np.array([float(n_out)])])
+    all_rates = np.concatenate(rates)
+
+    # np.interp needs a strictly increasing x, and chunk seams can land on the same
+    # sample when a boundary pause is cut to nothing.
+    keep = np.concatenate([[True], np.diff(bounds) > 0])
+    bounds, positions = bounds[keep], positions[keep]
+    positions = np.maximum.accumulate(positions)
+
+    anchors = np.stack([np.rint(bounds).astype(np.int64),
+                        np.rint(positions).astype(np.int64)], axis=1)
+    return TimeMap(
+        anchors=anchors,
+        n_in=n_in,
+        n_out=n_out,
+        rates=all_rates,
+        seg_bounds=np.rint(bounds).astype(np.int64),
+        notes={"stitched_from_chunks": len(in_bounds)},
+    )

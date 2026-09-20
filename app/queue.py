@@ -284,6 +284,11 @@ class JobManager:
             sio.save(out_path, res.audio, res.sr)
             out_dur = len(res.audio) / res.sr
 
+            from app import timemap_store
+
+            # Keep the map so a 1x transcript can be synced to this output later.
+            timemap_store.save_quietly(out_name, res.time_map, job.speed, res.sr)
+
             elapsed = time.perf_counter() - t_start
 
             job.result = {
