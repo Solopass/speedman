@@ -198,3 +198,78 @@ def test_vtt_is_served_as_text_vtt_not_audio():
     assert get_audio_media_type(P("talk_5x_fast.vtt")) == "text/vtt"
     assert get_audio_media_type(P("talk_5x_fast.synced.json")) == "application/json"
     assert get_audio_media_type(P("talk_5x_fast.mp3")) == "audio/mpeg"
+
+
+# --------------------------------------------------------------------------- word timings
+
+from app.transcript import estimate_word_times
+
+
+def test_words_span_the_segment_exactly():
+    words = estimate_word_times("one two three", 10.0, 13.0)
+    assert len(words) == 3
+    assert words[0]["start"] == pytest.approx(10.0)
+    # The last word absorbs float drift so the segment closes on its stated end.
+    assert words[-1]["end"] == pytest.approx(13.0)
+
+
+def test_word_times_are_monotonic_and_contiguous():
+    words = estimate_word_times("the quick brown fox jumps", 0.0, 5.0)
+    for a, b in zip(words, words[1:]):
+        assert a["start"] < b["start"]
+        assert a["end"] == pytest.approx(b["start"])
+
+
+def test_longer_words_get_more_time():
+    """Weighting by length approximates speech: 'unfortunately' takes longer than 'a'."""
+    words = estimate_word_times("a unfortunately", 0.0, 10.0)
+    short, long = words[0], words[1]
+    assert (long["end"] - long["start"]) > (short["end"] - short["start"]) * 5
+
+
+def test_single_word_fills_the_segment():
+    words = estimate_word_times("hello", 2.0, 4.0)
+    assert len(words) == 1
+    assert words[0]["start"] == pytest.approx(2.0)
+    assert words[0]["end"] == pytest.approx(4.0)
+
+
+def test_empty_text_yields_no_words():
+    assert estimate_word_times("", 0.0, 5.0) == []
+    assert estimate_word_times("   ", 0.0, 5.0) == []
+
+
+def test_zero_length_segment_does_not_divide_by_zero():
+    words = estimate_word_times("two words", 3.0, 3.0)
+    assert len(words) == 2
+    assert all(w["start"] == pytest.approx(3.0) for w in words)
+
+
+def test_warped_segments_carry_words_inside_their_own_bounds(store):
+    """Words are warped through the same map as the line, so they can never disagree
+    about where the line is."""
+    warped = warp_segments(
+        [{"start": 0.0, "end": 10.0, "text": "alpha beta gamma delta"}], _stored())
+    seg = warped[0]
+    assert len(seg["words"]) == 4
+    assert seg["words"][0]["start"] >= seg["start"]
+    assert seg["words"][-1]["start"] <= seg["end"] + 0.01
+    for a, b in zip(seg["words"], seg["words"][1:]):
+        assert a["start"] <= b["start"], "warped word times must stay ordered"
+
+
+def test_words_survive_into_the_written_json(store, tmp_path):
+    sr = 24000
+    timemap_store.save("o_5x_fast.mp3",
+                       FakeMap([[0, 0], [5 * sr, sr // 2], [10 * sr, 2 * sr]]),
+                       speed=5.0, sample_rate=sr)
+    src = tmp_path / "o.transcript.json"
+    src.write_text(json.dumps({"segments": [
+        {"start": 1.0, "end": 4.0, "text": "one two three four"},
+    ]}), encoding="utf-8")
+
+    result = tsync.sync_to_output(src, "o_5x_fast.mp3", tmp_path)
+    data = json.loads(result.json_path.read_text(encoding="utf-8"))
+    words = data["segments"][0]["words"]
+    assert [w["text"] for w in words] == ["one", "two", "three", "four"]
+    assert all("source_start" in w for w in words)

@@ -757,6 +757,24 @@ class SyncTranscriptRequest(BaseModel):
     source_path: Optional[str] = Field(None, description="Source audio, if not derivable")
 
 
+@app.get("/api/v1/transcript/{output_name:path}")
+def get_synced_transcript(output_name: str):
+    """The synced transcript for a compressed output, or 404 if it has not been made.
+
+    Saves the UI guessing at '<stem>.synced.json' and keeps the naming in one place.
+    """
+    stem = Path(str(output_name).strip("/\\")).stem
+    target = (OUTPUT_DIR / f"{stem}.synced.json").resolve()
+    if not target.is_file() or not is_within(target, OUTPUT_DIR):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No synced transcript for '{stem}'. Transcribe the source, then sync.")
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read transcript: {e}")
+
+
 # MUST stay above /api/v1/transcribe/{filename:path}. FastAPI matches in declaration
 # order and a :path parameter is greedy, so a later /sync would be read as a filename --
 # which it silently was, returning a plain transcription instead of a sync.

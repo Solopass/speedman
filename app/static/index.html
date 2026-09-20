@@ -385,6 +385,27 @@
     }
     .btn-transcribe:hover { background: var(--accent); color: #000; }
 
+    /* Follow-along transcript */
+    .tr-line {
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      border-left: 2px solid transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: color 0.12s, background 0.12s;
+    }
+    .tr-line:hover { background: #161b22; }
+    .tr-line.active {
+      color: #c9d1d9;
+      background: #161b22;
+      border-left-color: var(--accent);
+    }
+    .tr-line.past { color: #6e7681; }
+    /* The active word is what makes 5x followable, so it gets the strongest contrast. */
+    .tr-w.active { color: #fff; background: rgba(88, 166, 255, 0.28); border-radius: 3px; }
+    .tr-line.hit { background: #2a2418; }
+    .tr-line.hidden { display: none; }
+
     /* Comparison Section */
     .comparison-section {
       display: none;
@@ -598,6 +619,23 @@
         <div id="syncedTranscriptBox" style="display: none; margin-top: 0.75rem; padding: 0.6rem 0.85rem;
              background: #1b271f; border: 1px solid var(--success); border-radius: 6px;
              font-size: 0.8rem; color: var(--text-dim);"></div>
+
+        <!-- Follow-along transcript -->
+        <div id="transcriptCard" style="display: none; margin-top: 1rem; border-top: 1px solid #21262d; padding-top: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+            <h3 style="font-size: 1rem; color: #fff;">Transcript</h3>
+            <div style="display: flex; gap: 0.5rem; align-items: center; flex: 1; justify-content: flex-end;">
+              <input type="text" class="text-input" id="transcriptSearch" placeholder="Find in transcript…"
+                     oninput="filterTranscript(this.value)"
+                     style="max-width: 240px; padding: 0.35rem 0.6rem; font-size: 0.8rem;">
+              <button class="btn-preset" id="transcriptFollowBtn" onclick="toggleTranscriptFollow()"
+                      style="flex: none; padding: 0.35rem 0.9rem; font-size: 0.8rem; white-space: nowrap;">Following</button>
+            </div>
+          </div>
+          <div id="transcriptMeta" style="font-size: 0.72rem; color: var(--text-dim); margin: 0.35rem 0 0.6rem;"></div>
+          <div id="transcriptBody" style="max-height: 340px; overflow-y: auto; padding-right: 0.5rem;
+               font-size: 0.92rem; line-height: 1.65;"></div>
+        </div>
 
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1195,6 +1233,8 @@
       lastSourcePath = data.source_path || null;
       const syncBox = document.getElementById('syncedTranscriptBox');
       if (syncBox) syncBox.style.display = 'none';
+      // Shows itself only if this output already has a synced transcript.
+      loadTranscriptView(data.filename);
       if (data.video_id) showCachedVideo(data.video_id); else hideVideoCard();
       const statusBar = document.getElementById('statusBar');
       const playerCard = document.getElementById('playerCard');
@@ -1294,6 +1334,210 @@
       }
     });
 
+    // ----------------------------------------------------------------- Follow-along transcript
+    //
+    // Tracking uses requestAnimationFrame rather than the player's `timeupdate` event.
+    // timeupdate fires roughly 4x a second, which at 5x is over a second of source content
+    // per update -- the highlight would lag the audio badly, which is precisely the thing
+    // this view exists to prevent.
+    let trSegments = [];     // rendered lines, each with its word spans
+    let trWords = [];        // flat, time-ordered, for binary search
+    let trFollow = true;
+    let trRaf = null;
+    let trActiveWord = -1;
+    let trActiveLine = -1;
+    // A deadline, not a counter. A counter drifts upward whenever an auto-scroll fires no
+    // scroll event (already in position) or fires several (smooth scrolling), and once it
+    // is permanently positive the user can never take over.
+    let trAutoScrollUntil = 0;
+
+    async function loadTranscriptView(outputName) {
+      const card = document.getElementById('transcriptCard');
+      stopTranscriptTracking();
+      if (!outputName) { card.style.display = 'none'; return; }
+
+      let data;
+      try {
+        const res = await fetch('/api/v1/transcript/' + encodeURIComponent(outputName));
+        if (!res.ok) { card.style.display = 'none'; return; }
+        data = await res.json();
+      } catch (e) { card.style.display = 'none'; return; }
+
+      renderTranscript(data);
+      card.style.display = 'block';
+      startTranscriptTracking();
+    }
+
+    function renderTranscript(data) {
+      const body = document.getElementById('transcriptBody');
+      body.innerHTML = '';
+      trSegments = [];
+      trWords = [];
+
+      // Built once. The rAF loop only ever moves a class between existing nodes -- it
+      // must never re-render, or a 6,000-word transcript would stutter every frame.
+      const frag = document.createDocumentFragment();
+      (data.segments || []).forEach((seg, lineIndex) => {
+        const line = document.createElement('div');
+        line.className = 'tr-line';
+        line.dataset.start = seg.start;
+        line.dataset.sourceStart = seg.source_start;
+        line.onclick = () => seekToTranscript(seg);
+
+        const words = (seg.words && seg.words.length)
+          ? seg.words
+          : [{text: seg.text, start: seg.start, end: seg.end, source_start: seg.source_start}];
+
+        words.forEach(w => {
+          const span = document.createElement('span');
+          span.className = 'tr-w';
+          span.textContent = w.text + ' ';
+          line.appendChild(span);
+          trWords.push({start: w.start, sourceStart: w.source_start, span, lineIndex});
+        });
+
+        frag.appendChild(line);
+        trSegments.push(line);
+      });
+      body.appendChild(frag);
+
+      const mins = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+      document.getElementById('transcriptMeta').textContent =
+        `${trSegments.length} lines · ${trWords.length} words · ` +
+        `${mins(data.source_duration_s || 0)} of speech in ${mins(data.output_duration_s || 0)} ` +
+        `at ${data.speed}×. Click any line to jump.`;
+
+      // Manual scrolling means the user is reading ahead; stop yanking them back.
+      body.onscroll = () => {
+        if (performance.now() < trAutoScrollUntil) return;
+        if (trFollow) setTranscriptFollow(false);
+      };
+    }
+
+    function activeMediaElement() {
+      // Whichever is actually playing drives the highlight. The video is the 1x source, so
+      // it needs source times; the audio is the compressed output and needs warped ones.
+      const video = document.getElementById('videoPlayer');
+      if (video && video.getAttribute('src') && !video.paused) return {el: video, source: true};
+      const audio = document.getElementById('audioPlayer');
+      if (audio && audio.getAttribute('src')) return {el: audio, source: false};
+      return null;
+    }
+
+    function wordIndexAt(time, useSource) {
+      // Binary search: linear scanning 6,000 words every frame would be wasteful.
+      let lo = 0, hi = trWords.length - 1, found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const t = useSource ? trWords[mid].sourceStart : trWords[mid].start;
+        if (t <= time) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      return found;
+    }
+
+    // One tick of the highlight. Separated from the rAF driver so it can also be called
+    // from `timeupdate` -- browsers pause rAF entirely in a hidden tab and throttle it
+    // when occluded, and the highlight must be correct the moment the page is looked at
+    // again rather than whenever the next frame happens to arrive.
+    function updateTranscriptHighlight() {
+      const media = activeMediaElement();
+      if (!media || !trWords.length) return;
+
+      const idx = wordIndexAt(media.el.currentTime, media.source);
+      if (idx === trActiveWord) return;
+
+      if (trActiveWord >= 0) trWords[trActiveWord].span.classList.remove('active');
+      if (idx >= 0) {
+        trWords[idx].span.classList.add('active');
+        const line = trWords[idx].lineIndex;
+        if (line !== trActiveLine) {
+          if (trActiveLine >= 0) {
+            trSegments[trActiveLine].classList.remove('active');
+            trSegments[trActiveLine].classList.add('past');
+          }
+          trSegments[line].classList.add('active');
+          trSegments[line].classList.remove('past');
+          if (trFollow) scrollLineIntoView(trSegments[line]);
+          trActiveLine = line;
+        }
+      }
+      trActiveWord = idx;
+    }
+
+    function trackTranscript() {
+      updateTranscriptHighlight();
+      trRaf = requestAnimationFrame(trackTranscript);
+    }
+
+    function scrollLineIntoView(line) {
+      const body = document.getElementById('transcriptBody');
+      const target = line.offsetTop - body.clientHeight / 2 + line.clientHeight / 2;
+      // Our own scroll must not be mistaken for the user taking over. Smooth scrolling
+      // emits events for a few hundred ms, so the window covers the whole animation.
+      trAutoScrollUntil = performance.now() + 600;
+      body.scrollTo({top: Math.max(0, target), behavior: 'smooth'});
+    }
+
+    function startTranscriptTracking() {
+      if (trRaf === null) trRaf = requestAnimationFrame(trackTranscript);
+      // Coarse backstop for when rAF is paused or throttled, and a correction on seek.
+      ['audioPlayer', 'videoPlayer'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('timeupdate', updateTranscriptHighlight);
+          el.addEventListener('seeked', updateTranscriptHighlight);
+        }
+      });
+      document.addEventListener('visibilitychange', updateTranscriptHighlight);
+    }
+
+    function stopTranscriptTracking() {
+      if (trRaf !== null) { cancelAnimationFrame(trRaf); trRaf = null; }
+      ['audioPlayer', 'videoPlayer'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.removeEventListener('timeupdate', updateTranscriptHighlight);
+          el.removeEventListener('seeked', updateTranscriptHighlight);
+        }
+      });
+      document.removeEventListener('visibilitychange', updateTranscriptHighlight);
+      trActiveWord = -1;
+      trActiveLine = -1;
+    }
+
+    function seekToTranscript(seg) {
+      const media = activeMediaElement() ||
+                    {el: document.getElementById('audioPlayer'), source: false};
+      if (!media.el || !media.el.getAttribute('src')) return;
+      media.el.currentTime = media.source ? seg.source_start : seg.start;
+      if (media.el.paused) media.el.play().catch(() => {});
+    }
+
+    function setTranscriptFollow(on) {
+      trFollow = on;
+      const btn = document.getElementById('transcriptFollowBtn');
+      btn.textContent = on ? 'Following' : 'Follow';
+      btn.classList.toggle('active', on);
+    }
+
+    function toggleTranscriptFollow() {
+      setTranscriptFollow(!trFollow);
+      if (trFollow && trActiveLine >= 0) scrollLineIntoView(trSegments[trActiveLine]);
+    }
+
+    function filterTranscript(query) {
+      const q = (query || '').trim().toLowerCase();
+      trSegments.forEach(line => {
+        if (!q) {
+          line.classList.remove('hidden', 'hit');
+          return;
+        }
+        const match = line.textContent.toLowerCase().includes(q);
+        line.classList.toggle('hidden', !match);
+        line.classList.toggle('hit', match);
+      });
+    }
+
     // Media API transcribes asynchronously, so the transcript appears on disk a while
     // after the request returns. Retry the sync until it lands rather than making the
     // user come back and press something else.
@@ -1326,6 +1570,9 @@
         `${data.segments} lines warped onto the ${data.output_duration_s}s timeline ` +
         `(source was ${data.source_duration_s}s).<br>` +
         `<code style="font-size:0.75rem;">${data.windows_vtt_path}</code>`;
+
+      // The transcript has only just been written, so the view can come up now.
+      loadTranscriptView(data.output);
 
       // The video player can load it as a subtitle track for free.
       const video = document.getElementById('videoPlayer');

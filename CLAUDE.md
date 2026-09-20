@@ -18,7 +18,7 @@ Inside WSL:
 ```bash
 wsl --cd /mnt/d/Workspace/speedman .venv/bin/python -m pytest
 ```
-All 75 unit & API tests must pass (3 are skipped when optional backends are absent).
+All 215 unit & API tests must pass (4 are skipped when optional backends are absent).
 
 ### Running the Evaluation Harness
 Needs Media API up on `127.0.0.1:8080` (it supplies the ASR engine):
@@ -96,6 +96,9 @@ entries older than 24h. Do not relax any of this — `D:\Output\Videos` is a rea
 - `app/queue.py`: Background job worker with progress, measured ETA, and cancellation
 - `app/media_api.py`: Media API (`127.0.0.1:8080`) client, yt-dlp URL ingest, local library scan
 - `app/paths.py`: Windows <-> WSL path translation and containment checks, shared by the above
+- `app/video.py`: Temporary video cache — the only code here that deletes user-visible files
+- `app/timemap_store.py`: Persists each output's time map, so transcripts can be warped later
+- `app/transcript.py`: Warps 1x transcripts onto the compressed timeline; writes `.vtt` + `.synced.json`
 - `src/speedman/analyze.py`: VAD & onset/transient analysis
 - `src/speedman/chunking.py`: Pause-aligned chunking for long files (progress + cancellation)
 - `src/speedman/ratemap.py`: Non-uniform time map generation with boundary pause compression
