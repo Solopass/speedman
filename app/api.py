@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import signal
 import sys
@@ -269,6 +270,14 @@ class IngestUrlRequest(BaseModel):
 
 class TranscribeRequest(BaseModel):
     engine: str = Field("parakeet", description="Speech-to-text engine: parakeet or whisper")
+    source_path: Optional[str] = Field(
+        None,
+        description="The ORIGINAL audio to transcribe. Compression destroys ASR accuracy "
+                    "(measured: 150 words at 1x, 11 words of nonsense at 5x), so "
+                    "transcription always runs on the source. Compression results carry "
+                    "this as 'source_path'; omit it and the source is derived from the "
+                    "output filename.",
+    )
 
 
 class CompareRequest(BaseModel):
@@ -363,6 +372,42 @@ def require_output_format(fmt: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# Speedman names outputs "<stem>_<speed>x_<preset>[_uniform].<ext>". Recovering the stem
+# is what lets a transcription request find the audio the output was made from.
+_OUTPUT_NAME_RE = re.compile(r"^(?P<stem>.+?)_(?P<speed>[\d.]+)x_(?P<preset>[a-z]+)(?:_uniform)?$")
+
+SOURCE_SEARCH_DIRS = [
+    Path("/mnt/d/Output/Audio"),
+    Path("/mnt/d/Output/Videos"),
+    OUTPUT_DIR / "downloads",
+    OUTPUT_DIR / "video-cache",
+]
+
+
+def looks_like_speedman_output(path: Path) -> bool:
+    """True when this is one of our compressed outputs rather than a source."""
+    return bool(_OUTPUT_NAME_RE.match(path.stem)) and is_within(path, OUTPUT_DIR)
+
+
+def find_source_for_output(output_name: str) -> Optional[Path]:
+    """Locate the audio a compressed output was produced from.
+
+    Best-effort: compression results carry `source_path`, and callers should pass it.
+    This exists for the case where only a filename is to hand.
+    """
+    match = _OUTPUT_NAME_RE.match(Path(output_name).stem)
+    if not match:
+        return None
+    stem = match.group("stem")
+    for directory in SOURCE_SEARCH_DIRS:
+        if not directory.is_dir():
+            continue
+        for candidate in sorted(directory.glob(f"{stem}.*")):
+            if candidate.is_file() and not looks_like_speedman_output(candidate):
+                return candidate
+    return None
+
+
 def get_video_media_type(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".webm":
@@ -435,6 +480,9 @@ def _run_compression(
         "filename": out_name,
         "output_path": str(out_path),
         "windows_output_path": to_windows_path(out_path),
+        # Provenance: transcription must run on this, never on the output above.
+        "source_path": str(src_path),
+        "windows_source_path": to_windows_path(src_path),
         "audio_url": f"/api/v1/audio/{out_name}",
         "speed": speed,
         "preset": preset,
@@ -683,15 +731,55 @@ def discard_cached_video(video_id: str):
 
 @app.post("/api/v1/transcribe/{filename:path}")
 def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeRequest] = None):
-    """Sends an audio file from Speedman's output to Media API for Speech-To-Text."""
+    """Transcribes the ORIGINAL audio a compressed file was made from.
+
+    This route used to send Speedman's own output to Media API, which produced garbage:
+    measured on a 45s clip, parakeet returns 150 coherent words at 1x and 11 words of
+    nonsense at 5x (WER 0.19 at 3x, 0.96 at 5x -- see docs/EVALUATION.md). ASR engines are
+    not trained on time-compressed speech and collapse exactly where Speedman becomes
+    useful, so transcription runs on the source and never on the result.
+    """
     req = req or TranscribeRequest()
-    target = resolve_output_file(filename)
+
+    if req.source_path:
+        source = normalize_path(req.source_path).resolve()
+        if not is_path_allowed(source):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Source path '{source}' is outside permitted workstation roots")
+    else:
+        source = find_source_for_output(filename)
+        if source is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Could not work out what '{Path(filename).name}' was made from. "
+                    "Pass 'source_path' (compression results include it) -- transcribing "
+                    "the compressed audio instead would return nonsense."
+                ),
+            )
+
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail=f"Source audio not found: {source}")
+
+    # Refuse rather than silently produce a useless transcript.
+    if looks_like_speedman_output(source):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{source.name}' is a Speedman output, not a source. Transcribing "
+                "time-compressed audio returns nonsense; pass the original file instead."
+            ),
+        )
 
     try:
-        res = send_to_media_api_transcribe(target, engine=req.engine)
+        res = send_to_media_api_transcribe(source, engine=req.engine)
         return {
             "status": "forwarded_to_media_api",
-            "file": target.name,
+            "file": source.name,
+            "source_path": str(source),
+            "windows_source_path": to_windows_path(source),
+            "transcribed": "source_audio_at_1x",
             "media_api_response": res,
         }
     except Exception as e:

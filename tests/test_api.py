@@ -206,12 +206,25 @@ def test_audio_endpoint_rejects_traversal_outside_output_dir():
         assert resp.status_code == 404, f"{path} leaked a file outside OUTPUT_DIR"
 
 
-def test_transcribe_rejects_traversal_outside_output_dir():
+def test_transcribe_rejects_traversal_in_the_filename():
+    """Since transcription moved to the source, the filename is only ever parsed for a
+    stem and globbed inside SOURCE_SEARCH_DIRS -- it can no longer name a file to read.
+    A traversal attempt now fails as 'cannot derive a source' rather than 404."""
     resp = client.post(
         "/api/v1/transcribe/%2e%2e%2f%2e%2e%2fWorkspace%2fspeedman%2fCLAUDE.md",
         json={"engine": "parakeet"},
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 400
+    assert "CLAUDE" not in resp.text or "source_path" in resp.json()["detail"]
+
+
+def test_transcribe_rejects_traversal_in_an_explicit_source_path():
+    resp = client.post(
+        "/api/v1/transcribe/x_5x_fast.wav",
+        json={"engine": "parakeet",
+              "source_path": "/mnt/d/Audio/Speed/../../../etc/passwd"},
+    )
+    assert resp.status_code == 403
 
 
 def test_cors_is_not_wildcard():
@@ -305,3 +318,70 @@ def test_queued_job_result_carries_windows_output_path(synthetic_wav):
     result = job["result"]
     assert result["windows_output_path"].startswith("D:\\")
     assert result["format"] == "wav"
+
+
+# --------------------------------------------------------------------------- Transcription direction
+
+def test_compression_result_carries_its_source(synthetic_wav):
+    """Provenance is what lets transcription find the original. Without it the only
+    option is guessing from the filename."""
+    resp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast",
+    })
+    data = resp.json()
+    assert data["source_path"] == str(synthetic_wav)
+    assert data["windows_source_path"]
+
+
+def test_output_names_are_recognised_as_outputs():
+    from app.api import looks_like_speedman_output, OUTPUT_DIR
+
+    assert looks_like_speedman_output(OUTPUT_DIR / "talk_5x_fast.wav")
+    assert looks_like_speedman_output(OUTPUT_DIR / "talk_6x_max_uniform.mp3")
+    # A plain source file is not an output, wherever it sits.
+    assert not looks_like_speedman_output(OUTPUT_DIR / "talk.wav")
+    assert not looks_like_speedman_output(Path("/mnt/d/Output/Audio/talk_5x_fast.wav"))
+
+
+def test_transcribe_refuses_to_run_on_a_speedman_output(synthetic_wav):
+    """The whole point of the fix: parakeet returns nonsense on compressed audio, so
+    asking it to is an error rather than a useless success."""
+    comp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast",
+    }).json()
+
+    resp = client.post(f"/api/v1/transcribe/{comp['filename']}",
+                       json={"engine": "parakeet", "source_path": comp["output_path"]})
+    assert resp.status_code == 400
+    assert "nonsense" in resp.json()["detail"].lower()
+
+
+def test_transcribe_rejects_a_source_outside_permitted_roots():
+    resp = client.post("/api/v1/transcribe/anything.wav",
+                       json={"engine": "parakeet", "source_path": "/etc/passwd"})
+    assert resp.status_code == 403
+
+
+def test_transcribe_reports_clearly_when_the_source_cannot_be_derived():
+    resp = client.post("/api/v1/transcribe/not_an_output_name.wav", json={"engine": "parakeet"})
+    assert resp.status_code == 400
+    assert "source_path" in resp.json()["detail"]
+
+
+def test_transcribe_404s_when_the_named_source_is_missing():
+    resp = client.post("/api/v1/transcribe/x_5x_fast.wav",
+                       json={"engine": "parakeet",
+                             "source_path": "/mnt/d/Audio/Speed/definitely_missing_9f2.wav"})
+    assert resp.status_code == 404
+
+
+def test_find_source_for_output_recovers_the_stem(tmp_path, monkeypatch):
+    from app import api as api_mod
+
+    source = tmp_path / "episode.mp3"
+    source.write_bytes(b"x")
+    monkeypatch.setattr(api_mod, "SOURCE_SEARCH_DIRS", [tmp_path])
+
+    assert api_mod.find_source_for_output("episode_5x_fast.wav") == source
+    assert api_mod.find_source_for_output("episode_6x_max_uniform.flac") == source
+    assert api_mod.find_source_for_output("unrelated.wav") is None

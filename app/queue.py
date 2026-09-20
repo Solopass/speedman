@@ -293,6 +293,9 @@ class JobManager:
                 # The Studio shows this verbatim, so it has to match what /compress
                 # returns -- otherwise queued jobs display a /mnt/d/... path.
                 "windows_output_path": to_windows_path(out_path),
+                # Provenance: transcription must run on this, never on the output above.
+                "source_path": str(job.input_path),
+                "windows_source_path": to_windows_path(job.input_path),
                 "audio_url": f"/api/v1/audio/{out_name}",
                 "speed": job.speed,
                 "preset": job.preset,

@@ -81,6 +81,7 @@ entries older than 24h. Do not relax any of this — `D:\Output\Videos` is a rea
 - **`ALLOWED_ROOTS` gates compression *inputs*, never HTTP *outputs*.** It spans `D:\Workspace`, `D:\AI` and `D:\OBVLT`, so validating a served path against it is a directory traversal. Anything reachable over HTTP goes through `resolve_output_file()`, which is confined to `OUTPUT_DIR`.
 - **CORS is not a wildcard.** The Studio is same-origin and needs no grant; a wildcard only hands this loopback service (file reads, `/api/v1/shutdown`) to whatever page the user is browsing. Widen via `SPEEDMAN_CORS_ORIGINS` if a real client needs it.
 - **User-supplied URLs never reach yt-dlp's option parser** — scheme-checked, and passed after a `--` terminator.
+- **Transcription runs on the SOURCE, never on Speedman's output.** Measured on a 45s clip: parakeet returns 150 coherent words at 1x and 11 words of nonsense at 5x. ASR engines are not trained on time-compressed speech and collapse exactly where Speedman becomes useful. Compression results carry `source_path` for this; `/api/v1/transcribe` refuses a path that looks like one of our outputs rather than returning a useless transcript.
 - **Output formats come from `speedman.io.normalize_output_format`**, which raises rather than falling back to wav; a silent fallback writes a file whose extension contradicts the API response.
 
 ## Code Structure

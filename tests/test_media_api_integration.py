@@ -60,8 +60,12 @@ def test_ingest_url_validates_preset_and_format():
 
 
 def test_transcribe_file_not_found():
+    """A name that is not a Speedman output gives no stem to search from, so the route
+    asks for source_path rather than guessing. (A missing *named* source is a 404 --
+    see test_transcribe_404s_when_the_named_source_is_missing.)"""
     resp = client.post("/api/v1/transcribe/non_existent_file_999.wav", json={"engine": "parakeet"})
-    assert resp.status_code == 404
+    assert resp.status_code == 400
+    assert "source_path" in resp.json()["detail"]
 
 
 def test_ingest_url_rejects_non_http_urls():

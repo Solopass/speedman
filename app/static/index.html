@@ -619,8 +619,9 @@
               <button class="skip-btn" onclick="setPlayerRate(1.25)">1.25×</button>
             </div>
 
-            <button class="btn-transcribe" id="btnTranscribe" onclick="transcribeSpedAudio()">
-              🎙️ Transcribe with Parakeet
+            <button class="btn-transcribe" id="btnTranscribe" onclick="transcribeSpedAudio()"
+                    title="Runs on the original audio, not the sped-up file — ASR returns nonsense on time-compressed speech.">
+              🎙️ Transcribe original with Parakeet
             </button>
           </div>
 
@@ -803,6 +804,7 @@
     let activeJobId = null;
     let jobPollTimer = null;
     let lastGeneratedFilename = null;
+    let lastSourcePath = null;
 
     function switchTab(tab) {
       activeTab = tab;
@@ -1182,6 +1184,7 @@
 
     function renderCompletedResult(data) {
       lastGeneratedFilename = data.filename;
+      lastSourcePath = data.source_path || null;
       if (data.video_id) showCachedVideo(data.video_id); else hideVideoCard();
       const statusBar = document.getElementById('statusBar');
       const playerCard = document.getElementById('playerCard');
@@ -1272,18 +1275,20 @@
       btn.disabled = true;
       btn.textContent = 'Transcribing with Media API...';
       try {
+        // Always transcribe the ORIGINAL. Parakeet returns nonsense on time-compressed
+        // audio (150 words at 1x vs 11 at 5x), so the source path travels with the result.
         const res = await fetch(`/api/v1/transcribe/${encodeURIComponent(lastGeneratedFilename)}`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({engine: 'parakeet'}),
+          body: JSON.stringify({engine: 'parakeet', source_path: lastSourcePath}),
         });
         if (!res.ok) throw new Error((await res.json()).detail || 'Transcription failed');
         btn.textContent = '✓ Transcription queued in Media API!';
       } catch (e) {
         alert('Could not transcribe: ' + e.message);
-        btn.textContent = '🎙️ Transcribe with Parakeet';
+        btn.textContent = '🎙️ Transcribe original with Parakeet';
       } finally {
-        setTimeout(() => { btn.disabled = false; btn.textContent = '🎙️ Transcribe with Parakeet'; }, 5000);
+        setTimeout(() => { btn.disabled = false; btn.textContent = '🎙️ Transcribe original with Parakeet'; }, 5000);
       }
     }
 
