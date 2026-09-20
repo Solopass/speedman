@@ -45,6 +45,40 @@ class TimeMap:
         by the registration fixture."""
         return np.interp(in_samples, self.anchors[:, 0], self.anchors[:, 1])
 
+    def segment_output_lengths(self) -> np.ndarray:
+        """Output samples per segment, aligned with `seg_bounds` and `rates`."""
+        lengths = np.diff(self.seg_bounds).astype(np.float64)
+        return lengths / np.maximum(self.rates, 1e-9)
+
+    def measured_speech_rate(self, kinds: "np.ndarray | list[str]") -> float:
+        """The rate non-silence spans ACTUALLY run at, from the solved map.
+
+        This replaces the estimate `speed * (1 - 0.6 * silence_fraction)`, which ignores
+        the preset and ran optimistic by up to 4.2% against what the map really does
+        (docs/EVALUATION.md). `kinds` is the span kind per segment, in `seg_bounds` order.
+        """
+        kinds = np.asarray([str(k) for k in kinds])
+        if kinds.size != len(self.rates):
+            raise ValueError(
+                f"expected {len(self.rates)} span kinds, got {kinds.size}")
+        speech = kinds != "silence"
+        if not speech.any():
+            return float("nan")
+        lengths = np.diff(self.seg_bounds).astype(np.float64)
+        out_lens = self.segment_output_lengths()
+        return float(lengths[speech].sum() / max(out_lens[speech].sum(), 1e-9))
+
+    def clamped_fraction(self, max_rate: float) -> float:
+        """Share of segments pinned at the backend rate ceiling.
+
+        Zero through 15x on real speech; 32% at 16x and 57% at 30x. Duration stays exact
+        either way, so this is the only signal that the map has stopped being non-uniform
+        -- which is the entire product.
+        """
+        if not len(self.rates):
+            return 0.0
+        return float((self.rates >= max_rate - 1e-6).sum() / len(self.rates))
+
     def check_monotonic(self) -> None:
         d = np.diff(self.anchors[:, 1])
         if np.any(d <= 0):

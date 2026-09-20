@@ -591,6 +591,10 @@
           </div>
         </div>
 
+        <div id="clampWarning" style="display: none; margin-top: 0.75rem; padding: 0.6rem 0.85rem;
+             background: #2a2418; border: 1px solid #9e6a03; border-radius: 6px;
+             font-size: 0.8rem; color: #e3b341;"></div>
+
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <label>Compressed Result</label>
@@ -1197,6 +1201,21 @@
       document.getElementById('outDurVal').textContent = fmtTime(data.output_duration_s);
       document.getElementById('silenceVal').textContent = Math.round(data.silence_fraction * 100) + '%';
       document.getElementById('effRateVal').textContent = data.effective_speech_rate + '×';
+
+      // Past roughly 15x a growing share of the map sits at its rate ceiling, at which
+      // point the output is drifting toward a plain uniform stretch. Duration stays
+      // exact, so nothing else would reveal it.
+      const clamped = data.rate_clamped_fraction || 0;
+      const warn = document.getElementById('clampWarning');
+      if (clamped > 0.05) {
+        warn.style.display = 'block';
+        warn.textContent =
+          `⚠ ${Math.round(clamped * 100)}% of this file hit the time map's rate ceiling. ` +
+          `Speedman's reallocation is largely saturated at ${data.speed}× — the result is ` +
+          `closer to a plain uniform stretch. Try a lower speed for a real difference.`;
+      } else {
+        warn.style.display = 'none';
+      }
       document.getElementById('outputLocationText').textContent = data.windows_output_path || data.output_path;
 
       audioPlayer.src = data.audio_url;

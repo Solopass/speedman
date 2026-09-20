@@ -85,8 +85,13 @@ def _cache_save(cache: dict) -> None:
 
 
 def _measured_speech_rate(y: np.ndarray, cfg, speed: float) -> float:
-    """What the time map actually runs non-silence at, as opposed to the
-    `speed * (1 - 0.6s)` estimate the pipeline reports."""
+    """What the time map actually runs non-silence at.
+
+    Now the same code production uses -- `pipeline.process` reports this as
+    `effective_speech_rate`, so the harness's reported-vs-measured comparison should read
+    ~0 and stay there. It is kept as a separate path so a regression in the pipeline shows
+    up as a gap rather than being invisible.
+    """
     from speedman import analyze, ratemap
 
     try:
@@ -96,12 +101,7 @@ def _measured_speech_rate(y: np.ndarray, cfg, speed: float) -> float:
             protect_lead_ms=cfg.ratemap.protect_lead_ms,
         )
         tm = ratemap.build_time_map(ann, speed, cfg.ratemap)
-        lengths = np.diff(tm.seg_bounds).astype(float)
-        out_lens = lengths / np.maximum(tm.rates, 1e-9)
-        speech = np.array([s.kind.value != "silence" for s in ann.spans])
-        if not speech.any():
-            return float("nan")
-        return float(lengths[speech].sum() / max(out_lens[speech].sum(), 1e-9))
+        return tm.measured_speech_rate([sp.kind.value for sp in ann.spans])
     except Exception:
         return float("nan")
 
@@ -308,9 +308,11 @@ def summarise(rows: list[Row], speeds, conditions) -> str:
     if gaps:
         out.append("## Reported vs measured speech rate")
         out.append("")
-        out.append("`effective_speech_rate` is computed as `speed * (1 - 0.6 * silence_fraction)`, "
-                   "not measured from the time map. Gap below is `(reported - measured) / measured`; "
-                   "negative means the UI understates how fast speech is actually running.")
+        out.append("`effective_speech_rate` is now read off the solved time map, so this gap "
+                   "should sit at ~0 and is a regression check rather than a finding. It was "
+                   "-0.96% mean and -4.21% worst when the pipeline still reported the estimate "
+                   "`speed * (1 - 0.6 * silence_fraction)`, which ignored the preset entirely. "
+                   "Gap is `(reported - measured) / measured`.")
         out.append("")
         out.append(f"- mean gap: **{_mean(gaps):+.2f}%**")
         out.append(f"- worst gap: **{max(gaps, key=abs):+.2f}%**")

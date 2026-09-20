@@ -135,6 +135,8 @@ def process_chunked(
     timings = {"analyze": 0.0, "stretch": 0.0, "post": 0.0, "total": 0.0}
     silence_fractions = []
     effective_rates = []
+    estimated_rates = []
+    clamped_fractions = []
 
     for idx, (c_start, c_end) in enumerate(chunks, start=1):
         if cancel_check and cancel_check():
@@ -153,6 +155,8 @@ def process_chunked(
             tm = None
             silence_fractions.append(0.0)
             effective_rates.append(cfg.speed)
+            estimated_rates.append(cfg.speed)
+            clamped_fractions.append(0.0)
         else:
             ann = analyze.annotate_vad(
                 y_chunk, sr,
@@ -162,8 +166,10 @@ def process_chunked(
             tm = ratemap.build_time_map(ann, cfg.speed, cfg.ratemap)
             s_frac = tm.notes.get("silence_fraction", 0.0)
             silence_fractions.append(s_frac)
-            eff_rate = round(cfg.speed * (1.0 - 0.6 * s_frac), 2)
-            effective_rates.append(eff_rate)
+            # Measured from the solved map; see ratemap.TimeMap.measured_speech_rate.
+            effective_rates.append(tm.measured_speech_rate([sp.kind.value for sp in ann.spans]))
+            estimated_rates.append(cfg.speed * (1.0 - 0.6 * s_frac))
+            clamped_fractions.append(tm.clamped_fraction(cfg.ratemap.max_rate))
         timings["analyze"] += time.perf_counter() - t0
 
         if cancel_check and cancel_check():
@@ -216,14 +222,29 @@ def process_chunked(
     output_audio = np.concatenate(out_pieces) if out_pieces else np.zeros(0, dtype=np.float32)
     timings["total"] = time.perf_counter() - t_start
 
-    mean_silence = float(np.mean(silence_fractions)) if silence_fractions else 0.0
-    mean_eff_rate = float(np.mean(effective_rates)) if effective_rates else cfg.speed
+    # Weighted by input duration: chunks are pause-aligned and the last one is usually
+    # short, so an unweighted mean would let a 30-second tail count as much as 25 minutes.
+    weights = np.asarray(chunk_durations_in[:len(silence_fractions)], dtype=np.float64)
+    if weights.sum() <= 0:
+        weights = np.ones(len(silence_fractions), dtype=np.float64)
+
+    def weighted(values, default):
+        vals = np.asarray(values, dtype=np.float64)
+        finite = np.isfinite(vals)
+        if not finite.any():
+            return float(default)
+        return float(np.average(vals[finite], weights=weights[:len(vals)][finite]))
+
+    mean_silence = weighted(silence_fractions, 0.0) if silence_fractions else 0.0
+    mean_eff_rate = weighted(effective_rates, cfg.speed) if effective_rates else cfg.speed
 
     notes = {
         "chunked": True,
         "total_chunks": total_chunks,
         "silence_fraction": round(mean_silence, 4),
         "effective_speech_rate": round(mean_eff_rate, 2),
+        "estimated_speech_rate": round(weighted(estimated_rates, cfg.speed), 2),
+        "rate_clamped_fraction": round(weighted(clamped_fractions, 0.0), 4),
         "input_duration_s": round(n_samples / sr, 2),
         "output_duration_s": round(len(output_audio) / sr, 2),
     }

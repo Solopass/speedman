@@ -493,6 +493,9 @@ def _run_compression(
         "compression_ratio": round(in_dur / max(out_dur, 0.001), 2),
         "silence_fraction": res.notes.get("silence_fraction", 0.0),
         "effective_speech_rate": res.notes.get("effective_speech_rate", speed),
+        "estimated_speech_rate": res.notes.get("estimated_speech_rate", speed),
+        # >0 means the map is running at its ceiling and has stopped being non-uniform.
+        "rate_clamped_fraction": res.notes.get("rate_clamped_fraction", 0.0),
         "processing_time_s": round(elapsed, 2),
         "timings": res.timings,
         "chunked": res.notes.get("chunked", False),

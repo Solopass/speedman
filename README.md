@@ -88,7 +88,7 @@ speedman doctor                        check the setup
 
 Presets are `natural`, `fast`, `aggressive`, `max` — progressively harder pause compression and transient protection, and a heavier clarity chain.
 
-Every run reports the file's **silence fraction** and the resulting **effective speech rate**. That number is the best single predictor of how well a given file will do: on a podcast that is 30% silence, a requested 6x runs the actual speech at about 4.9x, which is why it feels easier than your player's 6x. On a tightly-edited audiobook with 10% silence there is much less to win.
+Every run reports the file's **silence fraction** and the resulting **effective speech rate**, the latter measured off the solved time map rather than estimated. That rate is the best single predictor of how a given file will do. Measured across the evaluation clip set, real content runs `s = 0.133`–`0.153`, so a requested 6x puts speech at roughly 5.5x — less of a discount than a chattier recording would give you, and worth knowing before you expect too much from it.
 
 ---
 
@@ -120,11 +120,13 @@ Not built yet: the eval harness (`eval/run_eval.py`), forced alignment (`align/`
 
 Past ~2.5x, naive speed-up becomes mush — not because information is gone, but because the cues the brain uses to segment speech get smeared. Two levers fix different parts of that:
 
-**Pause compression** genuinely lowers the rate the speech experiences: with silence fraction `s`, speech runs at about `N × (1 − 0.6s)`. Real, bounded, and it saturates above ~5.5x.
+**Pause compression** genuinely lowers the rate the speech experiences, and it is the one lever that has been shown to work: disabling it is worse on 11 of 12 evaluation clips (`p = 0.006`). Real, bounded, and smaller than it looks — measured content is only 13–15% silence, so the discount is about 1.1x rather than the 1.5x a 30%-silence file would give.
 
 **Within-speech reallocation** cannot make the file shorter — the map is normalised to hit the requested length exactly — but it moves the time budget from redundant vowel centres to consonant transients, so the consonants inside a 6x file live in a slower regime than 6x.
 
-Honest headline: together these buy roughly **1.5–3x of effective headroom** over naive speed-up, not an order of magnitude. That is enough to make 6x feel like 4.5x, which is the entire point. See `docs/ARCHITECTURE.md` for the arithmetic, including where each lever stops paying.
+Honest headline, now measured rather than argued: at 3x Speedman scores **42% fewer word errors than a uniform stretch** to the same duration, and every preset beats that control. Above ~3.5x no available instrument can tell the difference — ASR saturates and the modulation metric is structurally biased — so **the 5–6x claim this project is named for is not yet proven**, and one piece of evidence points against it.
+
+Lever 1 is demonstrated. Lever 2 has never shown a measurable effect. See `docs/EVALUATION.md` for what has been established, ruled out, and left open, and `docs/ARCHITECTURE.md` for the arithmetic.
 
 ---
 

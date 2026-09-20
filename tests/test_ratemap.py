@@ -84,3 +84,82 @@ def test_lever2_is_duration_neutral(speechlike):
     weak = build_time_map(ann, 6.0, RateMapConfig(protect_mult=0.95, crush_mult=1.1))
     strong = build_time_map(ann, 6.0, RateMapConfig(protect_mult=0.5, crush_mult=3.0))
     assert abs(weak.n_out - strong.n_out) / weak.n_out < 0.01
+
+
+# --------------------------------------------------------------------------- measured rate
+
+def test_measured_speech_rate_ignores_silence():
+    """The whole point: silence is compressed harder, so including it would report a rate
+    nobody experiences."""
+    from speedman.analyze import Annotation, Span, SpanKind
+
+    sr = 24000
+    spans = [
+        Span(0, sr, SpanKind.SPEECH),
+        Span(sr, 2 * sr, SpanKind.SILENCE),
+        Span(2 * sr, 3 * sr, SpanKind.SPEECH),
+    ]
+    ann = Annotation(spans=spans, sr=sr, n_samples=3 * sr)
+    tm = build_time_map(ann, 5.0, RateMapConfig())
+
+    measured = tm.measured_speech_rate([s.kind.value for s in ann.spans])
+    # Speech must run slower than the file average, because silence absorbed more.
+    assert measured < 5.0
+    assert measured > 1.0
+
+
+def test_measured_speech_rate_rejects_a_mismatched_kind_list():
+    from speedman.analyze import Annotation, Span, SpanKind
+
+    sr = 24000
+    ann = Annotation(spans=[Span(0, sr, SpanKind.SPEECH)], sr=sr, n_samples=sr)
+    tm = build_time_map(ann, 5.0, RateMapConfig())
+    with pytest.raises(ValueError, match="span kinds"):
+        tm.measured_speech_rate(["speech", "silence", "speech"])
+
+
+def test_measured_speech_rate_is_nan_when_everything_is_silence():
+    from speedman.analyze import Annotation, Span, SpanKind
+
+    sr = 24000
+    ann = Annotation(spans=[Span(0, sr, SpanKind.SILENCE)], sr=sr, n_samples=sr)
+    tm = build_time_map(ann, 5.0, RateMapConfig())
+    rate = tm.measured_speech_rate(["silence"])
+    assert rate != rate  # NaN
+
+
+def test_segment_output_lengths_sum_to_the_target_duration():
+    from speedman.analyze import Annotation, Span, SpanKind
+
+    sr = 24000
+    spans = [Span(0, sr, SpanKind.SPEECH), Span(sr, 2 * sr, SpanKind.SILENCE)]
+    ann = Annotation(spans=spans, sr=sr, n_samples=2 * sr)
+    tm = build_time_map(ann, 4.0, RateMapConfig())
+    assert tm.segment_output_lengths().sum() == pytest.approx(2 * sr / 4.0, rel=1e-6)
+
+
+def test_clamped_fraction_reports_segments_at_the_ceiling():
+    """Crushed vowel centres reach the ceiling long before protected onsets do, so a
+    ceiling between the two rates pins exactly the crushed half. That partial state is
+    the one worth reporting -- duration stays exact, so nothing else reveals it."""
+    from speedman.analyze import Annotation, Span, SpanKind
+
+    sr = 24000
+    spans = [
+        Span(0, sr, SpanKind.ONSET),
+        Span(sr, 2 * sr, SpanKind.STEADY),
+        Span(2 * sr, 3 * sr, SpanKind.ONSET),
+        Span(3 * sr, 4 * sr, SpanKind.STEADY),
+    ]
+    ann = Annotation(spans=spans, sr=sr, n_samples=4 * sr)
+
+    # Generous ceiling: nothing is pinned.
+    assert build_time_map(ann, 10.0, RateMapConfig(max_rate=40.0)).clamped_fraction(40.0) == 0.0
+
+    # At 10x the steady spans solve to ~19x and the onsets to ~7x, so a ceiling of 15
+    # catches exactly the two steady ones and the map stays feasible.
+    tm = build_time_map(ann, 10.0, RateMapConfig(max_rate=15.0))
+    assert tm.clamped_fraction(15.0) == pytest.approx(0.5)
+    assert tm.rates.max() <= 15.0 * 1.001
+    # Duration accuracy survives the clamping -- that is why it needs its own signal.
+    assert tm.segment_output_lengths().sum() == pytest.approx(4 * sr / 10.0, rel=1e-6)

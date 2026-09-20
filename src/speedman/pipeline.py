@@ -81,7 +81,13 @@ def process(
         notes["mode"] = "non-uniform"
         notes["n_anchors"] = len(tm.anchors)
         s = tm.notes.get("silence_fraction", 0.0)
-        notes["effective_speech_rate"] = round(cfg.speed * (1.0 - 0.6 * s), 2)
+        # Measured from the solved map, not estimated. The old formula ignored the preset
+        # and ran optimistic by up to 4.2% (docs/EVALUATION.md); it is kept alongside so
+        # the eval harness can still compare the two.
+        notes["effective_speech_rate"] = round(
+            tm.measured_speech_rate([sp.kind.value for sp in ann.spans]), 2)
+        notes["estimated_speech_rate"] = round(cfg.speed * (1.0 - 0.6 * s), 2)
+        notes["rate_clamped_fraction"] = round(tm.clamped_fraction(cfg.ratemap.max_rate), 4)
     t["analyze"] = time.perf_counter() - t0
 
     if cancel_check and cancel_check():
