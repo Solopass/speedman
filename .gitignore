@@ -45,3 +45,4 @@ comparisons/
 # Eval harness working files (audio clips and ASR cache are regenerable)
 eval/clips/
 eval/cache.json
+eval/listening/

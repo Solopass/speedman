@@ -104,6 +104,36 @@ The two effects cancel, which is why the internal decomposition changes dramatic
 The caveat: ASR may simply be insensitive to the consonant-transient clarity lever 2
 protects. A listening test could still find a difference this metric cannot see.
 
+## Listening test
+
+The instrument of last resort, and the only one that reaches 5×–6×. Open
+http://127.0.0.1:8081 → **Listening Test**.
+
+Each trial plays the same clip twice — Speedman and a uniform stretch to the same
+duration, order randomised — and collects two judgements in one pass:
+
+- **Which was easier to understand?** → does Speedman help at this speed
+- **Could you follow the content?** → where speech stops being usable at all
+
+Speeds run as a randomised ladder, not ascending: by the last rung of an ascending ladder
+you have heard the content several times, which confounds speed with practice.
+
+```bash
+wsl --cd /mnt/d/Workspace/speedman .venv/bin/python -m eval.listening_report
+```
+
+Pools every completed session into `eval/listening_results.md` with a two-sided sign test
+per speed. Ties are excluded rather than split — a listener who hears no difference is
+evidence for neither side. Rungs with fewer than 8 decisive trials are flagged, because
+below that the test cannot reach p < 0.05 however lopsided the result.
+
+**Blinding is enforced server-side.** Audio is addressed as `.../audio/<trial>/<slot>`
+where slot is `a` or `b`; no condition name appears in any payload, URL or filename, and
+`/results` returns 409 until the last trial is answered. A mid-session peek would bias
+every trial that follows.
+
+Sessions resume after a browser crash — verdicts are written to disk as they are recorded.
+
 ## Clip set
 
 Fixed on purpose — a moving clip set makes two runs incomparable. See `manifest.py`.

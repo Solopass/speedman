@@ -30,6 +30,15 @@ cache in `eval/cache.json`; pass `--no-cache` after changing anything in `src/sp
 because the cache cannot see code changes. **The ASR metric saturates above ~3.5x and
 cannot evaluate the 5-6x target band** — see `eval/README.md` before reading a number.
 
+### Running the Listening Test
+The only instrument that reaches 5-6x. Open http://127.0.0.1:8081 -> **Listening Test**,
+run a session, then pool it:
+```bash
+wsl --cd /mnt/d/Workspace/speedman .venv/bin/python -m eval.listening_report
+```
+Blinding is enforced server-side (slot-addressed audio, `/results` 409s until complete) —
+don't move the slot→condition mapping into a client payload.
+
 ### Running Service Standalone
 ```bash
 wsl --cd /mnt/d/Workspace/speedman ./run.sh

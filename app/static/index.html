@@ -433,6 +433,7 @@
       <div class="top-nav">
         <button class="nav-tab active" id="tabSingle" onclick="switchTab('single')">Compression Studio</button>
         <button class="nav-tab" id="tabCompare" onclick="switchTab('compare')">Blind A/B Evaluation</button>
+        <button class="nav-tab" id="tabListen" onclick="switchTab('listen')">Listening Test</button>
       </div>
     </header>
 
@@ -657,6 +658,105 @@
       </div>
     </div>
 
+    <!-- TAB 3: Forced-choice Listening Test -->
+    <div id="listenSection" class="comparison-section">
+      <div class="card" id="listenSetupCard">
+        <h2 style="font-size: 1.25rem; font-weight: 600; color: #fff; margin-bottom: 0.5rem;">Forced-Choice Listening Test</h2>
+        <p style="font-size: 0.9rem; color: var(--text-dim); margin-bottom: 1rem;">
+          Each trial plays the same clip twice — Speedman and a plain constant-rate stretch to the
+          same duration, order randomised. You pick which was easier to understand, and say whether
+          you could follow it at all. Speeds are interleaved rather than ascending, so practice
+          doesn't pile up on the fastest ones. Nothing is revealed until the session ends.
+        </p>
+
+        <div class="control-group">
+          <label>Speeds to test (comma-separated)</label>
+          <input type="text" class="text-input" id="listenSpeeds" value="3, 4, 5, 6, 8" style="margin-top: 0.4rem;">
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+          <div class="control-group" style="flex: 1;">
+            <label>Trials per speed</label>
+            <input type="number" class="text-input" id="listenTrials" value="6" min="1" max="50" style="margin-top: 0.4rem;">
+          </div>
+          <div class="control-group" style="flex: 1;">
+            <label>Excerpt length (seconds of source)</label>
+            <input type="number" class="text-input" id="listenExcerpt" value="30" min="3" max="120" style="margin-top: 0.4rem;">
+          </div>
+        </div>
+
+        <div class="control-group" style="margin-top: 1rem;">
+          <label>Clips</label>
+          <select class="text-input" id="listenClips" multiple size="6" style="margin-top: 0.4rem; height: auto;"></select>
+          <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.3rem;">
+            Select none to use all available clips.
+          </div>
+        </div>
+
+        <div id="listenEstimate" style="font-size: 0.8rem; color: var(--text-dim); margin-top: 1rem;"></div>
+
+        <button class="btn-run" id="listenStartBtn" onclick="startListeningSession()">Start Listening Test</button>
+        <div class="status-bar" id="listenStatusBar"></div>
+
+        <div id="listenResumeBox" style="display: none; margin-top: 1rem; background: #21262d; border-radius: 6px; padding: 0.75rem 1rem;">
+          <div style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.5rem;">Unfinished sessions</div>
+          <div id="listenResumeList"></div>
+        </div>
+      </div>
+
+      <div class="card" id="listenTrialCard" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.25rem;">
+          <h3 style="font-size: 1.1rem; color: #fff;" id="listenTrialHeading">Trial</h3>
+          <span style="font-size: 0.85rem; color: var(--accent); font-weight: 600;" id="listenSpeedBadge"></span>
+        </div>
+        <div style="height: 4px; background: #21262d; border-radius: 2px; margin-bottom: 1.25rem;">
+          <div id="listenProgressFill" style="height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width 0.2s;"></div>
+        </div>
+
+        <div style="display: flex; gap: 1rem;">
+          <button class="btn-preset" id="listenPlayA" onclick="playSlot('a')" style="flex: 1; padding: 1.25rem; font-size: 1.1rem;">▶ Play A <span style="opacity:0.5; font-size:0.8rem;">(1)</span></button>
+          <button class="btn-preset" id="listenPlayB" onclick="playSlot('b')" style="flex: 1; padding: 1.25rem; font-size: 1.1rem;">▶ Play B <span style="opacity:0.5; font-size:0.8rem;">(2)</span></button>
+        </div>
+        <audio id="listenPlayer" style="display: none;"></audio>
+
+        <div style="margin-top: 1.5rem;">
+          <label style="display:block; margin-bottom: 0.5rem;">1. Which was easier to understand?</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-preset" id="listenChoiceA" onclick="setChoice('a')" style="flex:1;">A <span style="opacity:0.5;">(A)</span></button>
+            <button class="btn-preset" id="listenChoiceB" onclick="setChoice('b')" style="flex:1;">B <span style="opacity:0.5;">(B)</span></button>
+            <button class="btn-preset" id="listenChoiceNone" onclick="setChoice('none')" style="flex:1;">No difference <span style="opacity:0.5;">(N)</span></button>
+          </div>
+        </div>
+
+        <div style="margin-top: 1.25rem;">
+          <label style="display:block; margin-bottom: 0.5rem;">2. Could you follow what was being said?</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-preset" id="listenFollowBoth" onclick="setFollowed('both')" style="flex:1;">Yes, both</button>
+            <button class="btn-preset" id="listenFollowPicked" onclick="setFollowed('picked')" style="flex:1;">Only the one I picked</button>
+            <button class="btn-preset" id="listenFollowNeither" onclick="setFollowed('neither')" style="flex:1;">Neither</button>
+          </div>
+        </div>
+
+        <button class="btn-run" id="listenNextBtn" onclick="submitVerdict()" disabled style="margin-top: 1.5rem;">
+          Next Trial
+        </button>
+        <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem; text-align: center;">
+          Keys: <kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">1</kbd>/<kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">2</kbd> replay A/B &bull;
+          <kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">A</kbd>/<kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">B</kbd>/<kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">N</kbd> choose &bull;
+          <kbd style="background:#21262d;padding:2px 5px;border-radius:3px;color:#fff;">Enter</kbd> next
+        </div>
+      </div>
+
+      <div class="card" id="listenResultsCard" style="display: none;">
+        <h3 style="font-size: 1.1rem; color: #fff; margin-bottom: 1rem;">Results — unblinded</h3>
+        <div id="listenResultsBody"></div>
+        <div style="font-size: 0.8rem; color: var(--text-dim); margin-top: 1rem;">
+          Pool this with previous sessions:
+          <code>python -m eval.listening_report</code>
+        </div>
+      </div>
+    </div>
+
     <footer>
       <div>Running on E-Cores (8–15) • Port 8081 • Zero-RAM Standby • Multi-Hour Chunking</div>
       <div><a href="/docs" target="_blank">Interactive Swagger API Docs</a> • Output in <code>D:\Audio\Speed</code></div>
@@ -682,8 +782,11 @@
       activeTab = tab;
       document.getElementById('tabSingle').classList.toggle('active', tab === 'single');
       document.getElementById('tabCompare').classList.toggle('active', tab === 'compare');
+      document.getElementById('tabListen').classList.toggle('active', tab === 'listen');
       document.getElementById('singleSection').style.display = tab === 'single' ? 'block' : 'none';
       document.getElementById('compareSection').classList.toggle('active', tab === 'compare');
+      document.getElementById('listenSection').classList.toggle('active', tab === 'listen');
+      if (tab === 'listen') loadListeningClips();
     }
 
     function setInputMode(mode) {
@@ -1011,6 +1114,23 @@
     // no-op (play then pause) and turned every seek into +/-10s.
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+      // The listening test owns the keyboard while a trial is on screen. Branching here
+      // rather than registering a second listener is deliberate: two listeners on the same
+      // keys is what made Space a no-op and doubled every seek.
+      if (activeTab === 'listen' && ltTrial) {
+        const handled = {
+          Digit1: () => playSlot('a'),
+          Digit2: () => playSlot('b'),
+          KeyA: () => setChoice('a'),
+          KeyB: () => setChoice('b'),
+          KeyN: () => setChoice('none'),
+          Enter: () => { if (ltChoice && ltFollowed) submitVerdict(); },
+        }[e.code];
+        if (handled) { e.preventDefault(); handled(); }
+        return;
+      }
+
       const player = document.getElementById('audioPlayer');
       if (!player || !player.src) return;
 
@@ -1147,6 +1267,218 @@
         document.getElementById('revealBtn').disabled = true;
       } catch (e) {
         alert('Could not reveal keys: ' + e.message);
+      }
+    }
+
+    // ----------------------------------------------------------------- Listening Test
+    let ltSession = null;
+    let ltTrial = null;
+    let ltChoice = null;
+    let ltFollowed = null;
+
+    async function loadListeningClips() {
+      // The clip list is static, but the resume list is not -- refreshing them together
+      // would leave finished sessions showing as resumable.
+      await refreshResumeList();
+      const select = document.getElementById('listenClips');
+      if (select.dataset.loaded) { updateListenEstimate(); return; }
+      try {
+        const res = await fetch('/api/v1/listening/clips');
+        const clips = await res.json();
+        select.innerHTML = clips.map(c =>
+          `<option value="${c.label}">${c.label} — ${c.kind}${c.available ? '' : ' (source missing)'}</option>`
+        ).join('');
+        select.dataset.loaded = '1';
+      } catch (e) {
+        select.innerHTML = '<option disabled>Could not load clips</option>';
+      }
+      updateListenEstimate();
+    }
+
+    async function refreshResumeList() {
+      try {
+        const res = await fetch('/api/v1/listening/sessions');
+        const sessions = await res.json();
+        const unfinished = sessions.filter(s => !s.complete && s.completed > 0);
+        const box = document.getElementById('listenResumeBox');
+        if (unfinished.length) {
+          document.getElementById('listenResumeList').innerHTML = unfinished.map(s =>
+            `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.3rem 0;">
+               <span style="font-size:0.8rem;color:var(--text-dim);">${s.session_id} — ${s.completed}/${s.total_trials} done</span>
+               <button class="btn-preset" style="padding:0.25rem 0.75rem;font-size:0.8rem;"
+                       onclick="resumeListeningSession('${s.session_id}')">Resume</button>
+             </div>`).join('');
+          box.style.display = 'block';
+        } else {
+          box.style.display = 'none';
+        }
+      } catch (e) { /* listing is a convenience; never block the setup form */ }
+    }
+
+    function updateListenEstimate() {
+      const speeds = document.getElementById('listenSpeeds').value.split(',').filter(s => s.trim()).length;
+      const per = parseInt(document.getElementById('listenTrials').value) || 0;
+      const total = speeds * per;
+      document.getElementById('listenEstimate').textContent =
+        `${total} trials — roughly ${Math.ceil(total * 20 / 60)} minutes of listening.`;
+    }
+    ['listenSpeeds', 'listenTrials'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateListenEstimate);
+    });
+
+    async function startListeningSession() {
+      const btn = document.getElementById('listenStartBtn');
+      const statusBar = document.getElementById('listenStatusBar');
+      btn.disabled = true;
+      statusBar.className = 'status-bar loading';
+      statusBar.textContent = 'Rendering every trial up front (a pause mid-test would leak timing)…';
+
+      const selected = [...document.getElementById('listenClips').selectedOptions].map(o => o.value);
+      try {
+        const res = await fetch('/api/v1/listening/session', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            speeds: document.getElementById('listenSpeeds').value.split(',').map(s => parseFloat(s)).filter(n => !isNaN(n)),
+            trials_per_speed: parseInt(document.getElementById('listenTrials').value),
+            excerpt_s: parseFloat(document.getElementById('listenExcerpt').value),
+            clips: selected.length ? selected : null,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Could not start session');
+        ltSession = await res.json();
+        statusBar.className = 'status-bar';
+        statusBar.textContent = '';
+        document.getElementById('listenSetupCard').style.display = 'none';
+        renderTrial();
+      } catch (e) {
+        statusBar.className = 'status-bar error';
+        statusBar.textContent = 'Error: ' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function resumeListeningSession(id) {
+      const res = await fetch('/api/v1/listening/session/' + encodeURIComponent(id));
+      if (!res.ok) return;
+      ltSession = await res.json();
+      document.getElementById('listenSetupCard').style.display = 'none';
+      renderTrial();
+    }
+
+    function renderTrial() {
+      if (!ltSession) return;
+      if (ltSession.complete) return showListeningResults();
+
+      ltTrial = ltSession.trials.find(t => t.index === ltSession.next_index);
+      ltChoice = null;
+      ltFollowed = null;
+
+      document.getElementById('listenTrialCard').style.display = 'block';
+      document.getElementById('listenResultsCard').style.display = 'none';
+      document.getElementById('listenTrialHeading').textContent =
+        `Trial ${ltSession.completed + 1} of ${ltSession.total_trials}`;
+      document.getElementById('listenSpeedBadge').textContent = `${ltTrial.speed}× · ${ltTrial.duration_s}s per side`;
+      document.getElementById('listenProgressFill').style.width =
+        (ltSession.completed / ltSession.total_trials * 100) + '%';
+
+      ['listenChoiceA','listenChoiceB','listenChoiceNone','listenFollowBoth','listenFollowPicked','listenFollowNeither']
+        .forEach(id => document.getElementById(id).classList.remove('active'));
+      document.getElementById('listenNextBtn').disabled = true;
+      playSlot('a');
+    }
+
+    function playSlot(slot) {
+      if (!ltTrial || !ltSession) return;
+      const p = document.getElementById('listenPlayer');
+      p.src = `/api/v1/listening/${encodeURIComponent(ltSession.session_id)}/audio/${ltTrial.index}/${slot}`;
+      p.play().catch(() => {});
+      ['a','b'].forEach(s => {
+        document.getElementById('listenPlay' + s.toUpperCase())
+          .classList.toggle('active', s === slot);
+      });
+    }
+
+    function setChoice(choice) {
+      ltChoice = choice;
+      [['a','listenChoiceA'],['b','listenChoiceB'],['none','listenChoiceNone']].forEach(([v, id]) =>
+        document.getElementById(id).classList.toggle('active', v === choice));
+      // "only the one I picked" cannot apply when there was nothing to pick between.
+      const picked = document.getElementById('listenFollowPicked');
+      picked.disabled = choice === 'none';
+      picked.style.opacity = choice === 'none' ? 0.4 : 1;
+      if (choice === 'none' && ltFollowed === 'picked') setFollowed(null);
+      refreshNextButton();
+    }
+
+    function setFollowed(followed) {
+      ltFollowed = followed;
+      [['both','listenFollowBoth'],['picked','listenFollowPicked'],['neither','listenFollowNeither']]
+        .forEach(([v, id]) => document.getElementById(id).classList.toggle('active', v === followed));
+      refreshNextButton();
+    }
+
+    function refreshNextButton() {
+      document.getElementById('listenNextBtn').disabled = !(ltChoice && ltFollowed);
+    }
+
+    async function submitVerdict() {
+      if (!ltChoice || !ltFollowed || !ltSession) return;
+      const btn = document.getElementById('listenNextBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/v1/listening/session/${encodeURIComponent(ltSession.session_id)}/verdict`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({trial_index: ltTrial.index, choice: ltChoice, followed: ltFollowed}),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Could not record verdict');
+        ltSession = await res.json();
+        document.getElementById('listenPlayer').pause();
+        if (ltSession.complete) refreshResumeList();
+        renderTrial();
+      } catch (e) {
+        alert('Could not record that verdict: ' + e.message);
+        btn.disabled = false;
+      }
+    }
+
+    async function showListeningResults() {
+      document.getElementById('listenTrialCard').style.display = 'none';
+      const card = document.getElementById('listenResultsCard');
+      const body = document.getElementById('listenResultsBody');
+      card.style.display = 'block';
+      body.innerHTML = '<p style="color:var(--text-dim);">Unblinding…</p>';
+
+      try {
+        const res = await fetch(`/api/v1/listening/session/${encodeURIComponent(ltSession.session_id)}/results`);
+        if (!res.ok) throw new Error((await res.json()).detail || 'Could not fetch results');
+        const data = await res.json();
+        body.innerHTML = `
+          <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+            <tr style="color:var(--text-dim); text-align:left;">
+              <th style="padding:0.4rem 0;">Speed</th><th>Speedman</th><th>Uniform</th>
+              <th>No difference</th><th>Followable</th>
+            </tr>
+            ${data.per_speed.map(r => {
+              const total = r.followed_both + r.followed_picked + r.followed_neither;
+              const rate = total ? Math.round(100 * (r.followed_both + r.followed_picked) / total) : 0;
+              const lead = r.speedman > r.uniform ? 'var(--success)' : (r.uniform > r.speedman ? 'var(--danger)' : '#fff');
+              return `<tr style="border-top:1px solid #21262d;">
+                <td style="padding:0.4rem 0;"><strong>${r.speed}×</strong></td>
+                <td style="color:${lead};"><strong>${r.speedman}</strong></td>
+                <td>${r.uniform}</td><td>${r.ties}</td><td>${rate}%</td>
+              </tr>`;
+            }).join('')}
+          </table>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-top:0.75rem;">
+            One session, one listener — read this as a first reading, not a verdict.
+            Run <code>python -m eval.listening_report</code> to pool it with earlier sessions
+            and get a significance test.
+          </p>`;
+      } catch (e) {
+        body.innerHTML = `<p style="color:var(--danger);">Could not unblind: ${e.message}</p>`;
       }
     }
 

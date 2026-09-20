@@ -263,6 +263,19 @@ class HeartbeatRequest(BaseModel):
     session_id: str
 
 
+class ListeningSessionRequest(BaseModel):
+    speeds: List[float] = Field(default_factory=lambda: [3.0, 4.0, 5.0, 6.0, 8.0])
+    trials_per_speed: int = Field(6, ge=1, le=50)
+    excerpt_s: float = Field(30.0, ge=3.0, le=120.0)
+    clips: Optional[List[str]] = Field(None, description="Clip labels; null means all available")
+
+
+class ListeningVerdictRequest(BaseModel):
+    trial_index: int
+    choice: str = Field(..., description="a | b | none")
+    followed: str = Field(..., description="both | picked | neither")
+
+
 # --------------------------------------------------------------------------- Core Routes
 
 @app.get("/health")
@@ -713,6 +726,125 @@ def get_comparison_key(folder_id: str):
         return {"raw": txt_key.read_text(encoding="utf-8")}
 
     raise HTTPException(status_code=404, detail="Key mapping not found for this comparison")
+
+
+# --------------------------------------------------------------------------- Listening Test
+#
+# Forced-choice A/B against a uniform control, run as a randomised speed ladder. This is
+# the only instrument that reaches 5-6x: ASR saturates above 3.5x and the modulation
+# metric structurally favours uniform. See docs/EVALUATION.md.
+#
+# Blinding is enforced here, not in the client: slot -> condition never appears in a
+# payload, URL or filename until the session is complete.
+
+@app.post("/api/v1/listening/session")
+def create_listening_session(req: ListeningSessionRequest):
+    """Renders every trial up front and returns the blind trial list."""
+    from eval import listening, manifest as eval_manifest
+
+    try:
+        clips = eval_manifest.by_label(req.clips) if req.clips else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    jobs.inc_job()
+    try:
+        session = listening.build_session(
+            speeds=req.speeds,
+            trials_per_speed=req.trials_per_speed,
+            clips=clips,
+            excerpt_s=req.excerpt_s,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[listening] session build failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not build session: {e}")
+    finally:
+        jobs.dec_job()
+
+    logger.info(f"[listening] session {session.session_id}: {len(session.trials)} trials")
+    return session.blind_state()
+
+
+@app.get("/api/v1/listening/clips")
+def list_listening_clips():
+    """The eval clip set, so listening verdicts sit alongside the WER numbers for the
+    same audio."""
+    from eval import manifest as eval_manifest
+
+    return [
+        {
+            "label": c.label,
+            "kind": c.kind,
+            "duration_s": c.duration_s,
+            "available": c.available,
+        }
+        for c in eval_manifest.CLIPS
+    ]
+
+
+@app.get("/api/v1/listening/sessions")
+def list_listening_sessions():
+    from eval import listening
+
+    return listening.list_sessions()
+
+
+@app.get("/api/v1/listening/session/{session_id}")
+def get_listening_session(session_id: str):
+    """Resume a session. Verdicts survive a browser crash."""
+    from eval import listening
+
+    try:
+        return listening.load_session(session_id).blind_state()
+    except listening.SessionNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/v1/listening/session/{session_id}/verdict")
+def record_listening_verdict(session_id: str, req: ListeningVerdictRequest):
+    from eval import listening
+
+    try:
+        session = listening.load_session(session_id)
+        listening.record_verdict(session, req.trial_index, req.choice, req.followed)
+    except listening.SessionNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except listening.InvalidVerdict as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return session.blind_state()
+
+
+@app.get("/api/v1/listening/session/{session_id}/results")
+def get_listening_results(session_id: str):
+    """Unblind. Refuses while trials remain, so a mid-session peek cannot bias the rest."""
+    from eval import listening
+
+    try:
+        return listening.reveal(listening.load_session(session_id))
+    except listening.SessionNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except listening.InvalidVerdict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/v1/listening/{session_id}/audio/{trial_index}/{slot}")
+def stream_listening_audio(session_id: str, trial_index: int, slot: str, request: Request):
+    """Audio addressed by slot, never by condition -- the URL itself must not unblind."""
+    from eval import listening
+
+    if slot not in ("a", "b"):
+        raise HTTPException(status_code=400, detail="slot must be 'a' or 'b'")
+    try:
+        session = listening.load_session(session_id)
+    except listening.SessionNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    target = session.audio_path(trial_index, slot).resolve()
+    if not target.is_file() or not is_within(target, listening.LISTENING_DIR):
+        raise HTTPException(status_code=404, detail="Trial audio not found")
+    return range_stream_file(target, request, media_type="audio/wav")
 
 
 # --------------------------------------------------------------------------- Web UI Route
