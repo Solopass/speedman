@@ -151,17 +151,70 @@ though the real value varies by preset.
 
 ---
 
+## The modulation metric: validated, then inconclusive by construction
+
+`eval/modulation.py` measures where a signal's temporal-envelope energy sits in modulation
+frequency. Speech intelligibility rides on 2–16 Hz modulations peaking at the 4–5 Hz
+syllabic rate (the basis of the Speech Transmission Index), and compressing time by *N*
+shifts every modulation frequency up by *N*. That shift is the mechanism by which fast
+speech stops being intelligible, and measuring it needs no reference alignment — so unlike
+ASR, it works at any speed.
+
+**It validates well against WER** where both instruments work (2.5×–3.5×, n = 38):
+
+| statistic | Spearman ρ vs WER | p | |
+|---|---|---|---|
+| `centroid_hz` | **+0.884** | <0.0001 | as predicted |
+| `syllabic_fraction` | −0.587 | 0.0001 | as predicted |
+| `peak_hz` | −0.043 | 0.80 | not significant (argmax is noisy) |
+
+**Above the ceiling it reports against Speedman.** At 4×–8×, every configuration retains
+*less* 2–16 Hz energy than the uniform control, and ablating either lever individually does
+not rescue it:
+
+| variant | beats uniform | p |
+|---|---|---|
+| full | 4/24 | 0.0015 |
+| lever 1 only | 5/24 | 0.0066 |
+| lever 2 only | 5/24 | 0.0066 |
+
+**But this result should not be read as evidence that Speedman is worse, for two reasons.**
+
+*The metric is used outside its validated range.* It was validated at 2.5×–3.5×, where
+syllabic content still lands partly inside 2–16 Hz. At 6× syllables arrive near 24 Hz —
+outside the band for both conditions — so the residual in-band energy is no longer the same
+physical quantity that correlated with WER. The validation does not automatically transfer
+across that boundary.
+
+*The metric structurally favours the control.* Uniform compression is a pure frequency
+scaling: it moves the modulation spectrum without changing its shape. Speedman deliberately
+warps non-uniformly, which smears that shape. Any shape-preservation measure prefers
+uniform by construction — but shape preservation is not the goal. Speedman's bet is that
+giving transients more time helps a listener decode, *even though* it distorts the global
+modulation profile. A metric that penalises the distortion cannot adjudicate the bet.
+
+So the honest status is: a useful validated correlate below 3.5×, a warning sign above it,
+and a structural bias that stops it settling the question. It is the first evidence pointing
+against the claim at target speed, and it raises the priority of a listening test rather
+than substituting for one.
+
 ## What would close the gap
 
-1. **A non-ASR intelligibility proxy** — STOI or a modulation-spectrum measure against the
-   1× signal. Does not route through a language model, so it should survive past 3.5×, and
-   it would test lever 2, which ASR may simply be blind to.
-2. **A listening test.** `/api/v1/compare` already generates blind randomised sets with a
-   hidden key. What is missing is a scoring protocol and somewhere to record verdicts.
-   This is the only route to ground truth at 5×–6×.
-3. **More clips.** n = 12 gives the sign test little power; a 2-of-12 result sits at
+1. **A listening test — now the only remaining route.** Both automatable instruments have
+   been built and both stop short: ASR saturates above 3.5×, and the modulation metric is
+   structurally biased toward the uniform control. `/api/v1/compare` already generates
+   blind randomised sets with a hidden key; what is missing is a scoring protocol and
+   somewhere to record verdicts. Even ~20 forced-choice trials at 5× would settle more than
+   either proxy has.
+2. **More clips.** n = 12 gives the sign test little power; a 2-of-12 result sits at
    p = 0.065 and cannot reach significance. Doubling the clip set would let smaller real
    effects surface.
+3. **Not STOI.** It correlates envelopes between a reference and a degraded signal of the
+   same length and alignment, which Speedman's output is not, and it models damage from
+   noise and reverberation rather than from rate. A clean 6× stretch scores well on STOI
+   while being unintelligible. It would mostly measure rubberband.
+4. **Not a different ASR engine.** Tested: whisper (`base`) is *worse* than parakeet, at
+   total failure (WER 1.000) by 4× where parakeet still discriminates.
 
 ---
 

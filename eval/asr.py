@@ -68,6 +68,7 @@ def require_online() -> None:
 
 
 def transcribe(audio_path: Path, engine: str = "parakeet",
+               model_size: str = "base",
                timeout_s: float = DEFAULT_TIMEOUT_S) -> Transcript:
     """Transcribe one file, blocking until Media API reports a terminal status.
 
@@ -81,7 +82,8 @@ def transcribe(audio_path: Path, engine: str = "parakeet",
     with httpx.Client(timeout=30.0) as client:
         resp = client.post(
             f"{MEDIA_API_BASE}/api/v1/transcribe",
-            json={"source": str(audio_path), "engine": engine},
+            # model_size is ignored by Media API for any engine but whisper.
+            json={"source": str(audio_path), "engine": engine, "model_size": model_size},
         )
         if resp.status_code not in (200, 201, 202):
             raise ASRFailed(f"submit failed ({resp.status_code}): {resp.text[:300]}")
