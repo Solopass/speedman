@@ -83,3 +83,46 @@ def test_ingest_url_route_rejects_argument_injection():
     })
     assert resp.status_code == 400
     assert not Path("/tmp/speedman_pwned").exists()
+
+
+# --------------------------------------------------------------------------- yt-dlp discovery
+
+def test_finds_the_yt_dlp_this_machine_actually_has():
+    """The fallback searched only ~/.local/bin and /usr/local/bin, so on this workstation
+    it could never fire -- and the error told the user to install something they already
+    had, in media-api's venv."""
+    from app.media_api import find_ytdlp, MEDIA_API_VENV_YTDLP
+
+    found = find_ytdlp()
+    if MEDIA_API_VENV_YTDLP.is_file():
+        assert found == MEDIA_API_VENV_YTDLP, "should prefer the auto-updating copy"
+    if found is not None:
+        assert found.is_file()
+
+
+def test_env_override_wins(tmp_path, monkeypatch):
+    fake = tmp_path / "yt-dlp"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("SPEEDMAN_YTDLP", str(fake))
+    from app.media_api import find_ytdlp
+
+    assert find_ytdlp() == fake
+
+
+def test_env_override_pointing_at_nothing_is_ignored(monkeypatch):
+    """A stale env var should not disable the search entirely."""
+    monkeypatch.setenv("SPEEDMAN_YTDLP", "/definitely/not/here/yt-dlp")
+    from app.media_api import find_ytdlp, MEDIA_API_VENV_YTDLP
+
+    found = find_ytdlp()
+    if MEDIA_API_VENV_YTDLP.is_file():
+        assert found == MEDIA_API_VENV_YTDLP
+
+
+def test_error_names_the_env_var_when_nothing_is_found(monkeypatch):
+    import app.media_api as m
+
+    monkeypatch.setattr(m, "find_ytdlp", lambda: None)
+    monkeypatch.setattr(m, "check_media_api_online", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match="SPEEDMAN_YTDLP"):
+        m.extract_audio_from_url("https://www.youtube.com/watch?v=x")

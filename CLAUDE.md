@@ -54,10 +54,13 @@ wsl --cd /mnt/d/Workspace/speedman ./run.sh
 ## YouTube / URL ingest
 
 `POST /api/v1/ingest/url` (Studio -> "YouTube / Web URL") **delegates the download to
-Media API**, which owns the auto-updating yt-dlp this workstation uses. There is no
-yt-dlp in WSL or in the venv, and installing a second one is the wrong fix: YouTube
-breaks extractors constantly and a private copy would rot silently until the day it was
-needed. If Media API is down, the error says so and names the two ways out.
+Media API**, which owns the auto-updating yt-dlp this workstation uses. Installing a
+second copy is the wrong fix: YouTube breaks extractors constantly and a private one
+would rot silently until the day it was needed. If Media API is down, `find_ytdlp()`
+borrows the binary from its venv (`D:\Workspace\media-api\.venv\bin\yt-dlp`); override
+with `SPEEDMAN_YTDLP`. That fallback searched only `~/.local/bin` and `/usr/local/bin`
+for a while, so it could never fire on this machine and the error told you to install
+something you already had.
 
 The download runs **inside the job**, not inside the request — a long podcast would
 otherwise hold the HTTP connection open for minutes. Clients poll `/api/v1/jobs/{id}`

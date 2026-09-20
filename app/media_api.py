@@ -243,25 +243,51 @@ def download_video_from_url(url: str, on_progress=None) -> tuple[Path, bool]:
     raise RuntimeError(f"Media API reported success but produced no readable file: {outputs}")
 
 
+MEDIA_API_VENV_YTDLP = Path("/mnt/d/Workspace/media-api/.venv/bin/yt-dlp")
+"""Media API's own copy -- the one with auto_update_ytdlp enabled, and the only yt-dlp
+this workstation actually has. Borrowing it beats installing a second binary that would
+rot silently until the day it was needed."""
+
+
+def find_ytdlp() -> Optional[Path]:
+    """Locate a usable yt-dlp, preferring the copy Media API keeps updated.
+
+    The fallback below used to search only ~/.local/bin and /usr/local/bin, neither of
+    which has it here, so the fallback could never fire and the error told the user to
+    install something they already had.
+    """
+    override = os.getenv("SPEEDMAN_YTDLP")
+    if override and Path(override).is_file():
+        return Path(override)
+
+    candidates = [
+        MEDIA_API_VENV_YTDLP,
+        Path.home() / ".whisper-env/bin/yt-dlp",
+        Path.home() / ".local/bin/yt-dlp",
+        Path("/usr/local/bin/yt-dlp"),
+        Path("/usr/bin/yt-dlp"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    on_path = shutil.which("yt-dlp")
+    return Path(on_path) if on_path else None
+
+
 def _download_via_local_ytdlp(url: str) -> Path:
-    """Fallback for when Media API is down. Requires a local yt-dlp, which this machine
-    does not currently have -- the error says so rather than leaving a bare 'not found'."""
-    ytdlp_bin = shutil.which("yt-dlp")
-    if not ytdlp_bin:
-        # Check standard paths
-        for candidate in ["/home/jake/.local/bin/yt-dlp", "/usr/local/bin/yt-dlp"]:
-            if Path(candidate).is_file():
-                ytdlp_bin = candidate
-                break
+    """Fallback for when Media API is down, using whatever yt-dlp this machine has."""
+    ytdlp_bin = find_ytdlp()
 
     if not ytdlp_bin:
         raise RuntimeError(
-            f"Cannot download: Media API ({MEDIA_API_BASE}) is unreachable and no local "
-            "yt-dlp is installed. Start Media API -- it owns the auto-updating yt-dlp "
-            "this workstation uses -- or install yt-dlp into WSL as a fallback."
+            f"Cannot download: Media API ({MEDIA_API_BASE}) is unreachable and no yt-dlp "
+            "could be found. Start Media API -- it owns the auto-updating yt-dlp this "
+            "workstation uses -- or point SPEEDMAN_YTDLP at a binary."
         )
 
-    logger.info(f"[media_api] Falling back to local yt-dlp for {url}")
+    ytdlp_bin = str(ytdlp_bin)
+    logger.info(f"[media_api] Media API is down; falling back to {ytdlp_bin} for {url}")
 
     out_template = str(DOWNLOADS_DIR / "%(title).200B.%(ext)s")
 
