@@ -84,3 +84,25 @@ def test_api_jobs_endpoints(sample_wav):
     # Test cancel endpoint on non-existent job -> 404
     bad_cancel = client.post("/api/v1/jobs/nonexistent_xyz/cancel")
     assert bad_cancel.status_code == 404
+
+
+# --------------------------------------------------------------------------- URL-sourced jobs
+
+def test_job_requires_an_input_path_or_a_source_url():
+    from app.queue import SpeedmanJob
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="input_path or a source_url"):
+        SpeedmanJob(job_id="j", input_path=None, source_url=None)
+
+
+def test_url_job_carries_the_url_and_has_no_filename_yet():
+    """input_path is resolved by the worker after the download, so to_dict has to cope
+    with it being absent -- the UI polls this before the download finishes."""
+    from app.queue import SpeedmanJob
+
+    job = SpeedmanJob(job_id="j", source_url="https://example.com/v")
+    assert job.input_path is None
+    d = job.to_dict()
+    assert d["source_url"] == "https://example.com/v"
+    assert d["input_filename"] is None

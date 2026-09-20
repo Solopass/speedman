@@ -105,22 +105,90 @@ def list_media_library(limit: int = 30) -> List[Dict[str, Any]]:
     return items
 
 
-def extract_audio_from_url(url: str) -> Path:
-    """Extracts audio from a YouTube or web media URL by invoking yt-dlp on E-cores
-    into DOWNLOADS_DIR.
+DOWNLOAD_TIMEOUT_S = float(os.getenv("SPEEDMAN_DOWNLOAD_TIMEOUT", "1800"))
 
-    (Delegating to Media API when it is up would save a second download, but that path
-    is not implemented -- this always shells out to yt-dlp.)
-    """
+
+def validate_ingest_url(url: str) -> str:
+    """Scheme check, shared by the route (fail fast with a 400) and the downloader
+    (never trust that the route ran)."""
     url = str(url or "").strip()
-    # yt-dlp takes the URL as a positional argument, so a value beginning with "-" would
-    # be parsed as an option (--exec, --config-location, ...). The scheme check plus the
-    # "--" terminator below keep caller input out of yt-dlp's option parser.
     if not _HTTP_URL_RE.match(url):
         raise ValueError("Only http:// and https:// URLs can be ingested")
+    return url
 
-    logger.info(f"[media_api] Extracting audio for URL: {url}")
 
+def extract_audio_from_url(url: str, on_progress=None) -> Path:
+    """Extracts audio from a YouTube or web media URL.
+
+    Delegates to Media API when it is up, and only falls back to a local yt-dlp. That
+    ordering matters: YouTube breaks extractors constantly, and Media API's copy
+    auto-updates (`auto_update_ytdlp`), while a second binary installed beside it would
+    silently rot until the day someone needed it. There is no local yt-dlp on this
+    machine today, so Media API is in practice the only path.
+
+    `on_progress` receives dicts shaped like the pipeline's, so a queued job can report
+    download progress through the same channel it reports compression progress.
+    """
+    # yt-dlp takes the URL as a positional argument, so a value beginning with "-" would
+    # be parsed as an option (--exec, --config-location, ...). The scheme check plus the
+    # "--" terminator in the fallback keep caller input out of yt-dlp's option parser.
+    url = validate_ingest_url(url)
+
+    if check_media_api_online():
+        try:
+            return _download_via_media_api(url, on_progress=on_progress)
+        except Exception as e:
+            logger.warning(f"[media_api] download via Media API failed ({e}); trying local yt-dlp")
+
+    return _download_via_local_ytdlp(url)
+
+
+def _download_via_media_api(url: str, on_progress=None) -> Path:
+    """Queue a download on Media API and wait for the file."""
+    logger.info(f"[media_api] Delegating download to Media API: {url}")
+
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(
+            f"{MEDIA_API_BASE}/api/v1/download",
+            json={"url": url, "audio_only": True, "format": "wav"},
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise RuntimeError(f"Media API rejected the download ({resp.status_code}): {resp.text[:300]}")
+        job_id = resp.json().get("job_id")
+        if not job_id:
+            raise RuntimeError(f"Media API returned no job_id: {resp.text[:200]}")
+
+        deadline = time.monotonic() + DOWNLOAD_TIMEOUT_S
+        while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"download timed out after {DOWNLOAD_TIMEOUT_S:.0f}s")
+            status = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}").json()
+            state = str(status.get("status", "")).lower()
+
+            if on_progress:
+                on_progress({
+                    "stage": "downloading",
+                    "progress_pct": float(status.get("progress_percent") or 0.0),
+                })
+
+            if state == "completed":
+                break
+            if state in ("failed", "error", "cancelled"):
+                raise RuntimeError(f"Media API download {state}: {status.get('error') or 'no detail'}")
+            time.sleep(1.5)
+
+    outputs = status.get("output_files") or {}
+    for key in ("audio", "media", "video"):
+        candidate = outputs.get(key)
+        if candidate and Path(candidate).is_file():
+            logger.info(f"[media_api] Downloaded {candidate}")
+            return Path(candidate)
+    raise RuntimeError(f"Media API reported success but produced no readable file: {outputs}")
+
+
+def _download_via_local_ytdlp(url: str) -> Path:
+    """Fallback for when Media API is down. Requires a local yt-dlp, which this machine
+    does not currently have -- the error says so rather than leaving a bare 'not found'."""
     ytdlp_bin = shutil.which("yt-dlp")
     if not ytdlp_bin:
         # Check standard paths
@@ -130,7 +198,13 @@ def extract_audio_from_url(url: str) -> Path:
                 break
 
     if not ytdlp_bin:
-        raise RuntimeError("yt-dlp is not installed or available on PATH")
+        raise RuntimeError(
+            f"Cannot download: Media API ({MEDIA_API_BASE}) is unreachable and no local "
+            "yt-dlp is installed. Start Media API -- it owns the auto-updating yt-dlp "
+            "this workstation uses -- or install yt-dlp into WSL as a fallback."
+        )
+
+    logger.info(f"[media_api] Falling back to local yt-dlp for {url}")
 
     out_template = str(DOWNLOADS_DIR / "%(title).200B.%(ext)s")
 

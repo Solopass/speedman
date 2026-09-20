@@ -51,6 +51,18 @@ wsl --cd /mnt/d/Workspace/speedman ./run.sh
 - Explorer Send-To: Right-click audio file -> `Send to` -> `Speedman (5x Fast)` (`speedman-sendto.ps1`)
 - Rebuild shortcuts: `powershell -File Create-Desktop-Shortcut.ps1`
 
+## YouTube / URL ingest
+
+`POST /api/v1/ingest/url` (Studio -> "YouTube / Web URL") **delegates the download to
+Media API**, which owns the auto-updating yt-dlp this workstation uses. There is no
+yt-dlp in WSL or in the venv, and installing a second one is the wrong fix: YouTube
+breaks extractors constantly and a private copy would rot silently until the day it was
+needed. If Media API is down, the error says so and names the two ways out.
+
+The download runs **inside the job**, not inside the request — a long podcast would
+otherwise hold the HTTP connection open for minutes. Clients poll `/api/v1/jobs/{id}`
+and see a `downloading` stage before `stretching`.
+
 ## Invariants worth not regressing
 
 - **`ALLOWED_ROOTS` gates compression *inputs*, never HTTP *outputs*.** It spans `D:\Workspace`, `D:\AI` and `D:\OBVLT`, so validating a served path against it is a directory traversal. Anything reachable over HTTP goes through `resolve_output_file()`, which is confined to `OUTPUT_DIR`.

@@ -38,6 +38,7 @@ from app.media_api import (
     list_media_library,
     extract_audio_from_url,
     send_to_media_api_transcribe,
+    validate_ingest_url,
 )
 
 # Paths
@@ -552,15 +553,25 @@ def media_api_library():
 
 @app.post("/api/v1/ingest/url")
 async def ingest_url_and_compress(req: IngestUrlRequest):
-    """Extracts audio from a YouTube/web URL and queues it for Speedman compression."""
+    """Queues a YouTube/web URL for download and compression.
+
+    The download runs inside the job, not inside this request: a two-hour podcast would
+    otherwise hold the HTTP connection open for minutes with no progress to show. The
+    client polls /api/v1/jobs/{id} and sees a 'downloading' stage before 'stretching'.
+    """
     fmt = require_output_format(req.format)
+    if req.preset not in PRESETS:
+        raise HTTPException(status_code=400, detail=f"Unknown preset '{req.preset}'. Available: {list(PRESETS.keys())}")
+
+    # Validate the URL here so an obviously bad one fails fast with a 400 rather than
+    # surfacing later as a failed job.
     try:
-        downloaded_path = extract_audio_from_url(req.url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to extract audio from URL: {e}")
+        validate_ingest_url(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     job = job_queue.submit(
-        input_path=downloaded_path,
+        source_url=req.url,
         speed=req.speed,
         preset=req.preset,
         uniform=req.uniform,
@@ -570,7 +581,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
     return {
         "status": "queued",
         "job_id": job.job_id,
-        "input_filename": downloaded_path.name,
+        "source_url": req.url,
         "speed": req.speed,
         "preset": req.preset,
         "format": job.output_format,

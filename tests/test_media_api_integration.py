@@ -29,14 +29,34 @@ def test_media_library_listing():
         assert "size_mb" in it
 
 
-def test_ingest_url_validation():
-    # Invalid or unreachable URL should raise 400
+def test_ingest_url_queues_a_job_rather_than_downloading_inline():
+    """The download moved into the job. A syntactically valid URL is accepted immediately
+    even if the host turns out to be unreachable -- that failure surfaces on the job, not
+    as a request that held the connection open while yt-dlp timed out."""
     resp = client.post("/api/v1/ingest/url", json={
         "url": "https://invalid-non-existent-domain-999.com/video",
         "speed": 5.0,
     })
-    assert resp.status_code == 400
-    assert "Failed to extract audio" in resp.json()["detail"]
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "queued"
+    assert body["source_url"].startswith("https://")
+    assert client.get(f"/api/v1/jobs/{body['job_id']}").status_code == 200
+
+
+def test_ingest_url_rejects_a_bad_scheme_immediately():
+    """A URL that can never work should fail fast rather than becoming a doomed job."""
+    for bad in ("--exec=touch /tmp/pwned", "file:///etc/passwd", "ftp://x/y", ""):
+        resp = client.post("/api/v1/ingest/url", json={"url": bad, "speed": 5.0})
+        assert resp.status_code in (400, 422), f"{bad!r} was accepted"
+
+
+def test_ingest_url_validates_preset_and_format():
+    good = "https://example.com/video"
+    assert client.post("/api/v1/ingest/url",
+                       json={"url": good, "preset": "nope"}).status_code == 400
+    assert client.post("/api/v1/ingest/url",
+                       json={"url": good, "format": "ogg"}).status_code == 400
 
 
 def test_transcribe_file_not_found():

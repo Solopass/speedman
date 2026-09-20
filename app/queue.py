@@ -40,14 +40,20 @@ class SpeedmanJob:
     def __init__(
         self,
         job_id: str,
-        input_path: Path,
+        input_path: Optional[Path] = None,
         speed: float = 5.0,
         preset: str = "fast",
         uniform: bool = False,
         output_dir: Optional[Path] = None,
         output_format: str = "wav",
+        source_url: Optional[str] = None,
     ):
+        if input_path is None and not source_url:
+            raise ValueError("a job needs either an input_path or a source_url")
         self.job_id = job_id
+        # Resolved by the worker when the job starts from a URL: downloading a two-hour
+        # podcast inside the HTTP request would hold the connection open for minutes.
+        self.source_url = source_url
         self.input_path = input_path
         self.speed = speed
         self.preset = preset
@@ -88,7 +94,8 @@ class SpeedmanJob:
             "preset": self.preset,
             "uniform": self.uniform,
             "output_format": self.output_format,
-            "input_filename": self.input_path.name,
+            "input_filename": self.input_path.name if self.input_path else None,
+            "source_url": self.source_url,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -109,12 +116,13 @@ class JobManager:
 
     def submit(
         self,
-        input_path: Path,
+        input_path: Optional[Path] = None,
         speed: float = 5.0,
         preset: str = "fast",
         uniform: bool = False,
         output_dir: Optional[Path] = None,
         output_format: str = "wav",
+        source_url: Optional[str] = None,
     ) -> SpeedmanJob:
         job_id = f"job_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job = SpeedmanJob(
@@ -125,13 +133,15 @@ class JobManager:
             uniform=uniform,
             output_dir=output_dir,
             output_format=output_format,
+            source_url=source_url,
         )
         with self._lock:
             self.jobs[job_id] = job
             self._trim_history()
 
         self.job_queue.put(job)
-        logger.info(f"[queue] Job {job_id} queued for {input_path.name} ({speed}x {preset}, format={job.output_format})")
+        what = input_path.name if input_path else source_url
+        logger.info(f"[queue] Job {job_id} queued for {what} ({speed}x {preset}, format={job.output_format})")
         return job
 
     def get_job(self, job_id: str) -> Optional[SpeedmanJob]:
@@ -198,6 +208,17 @@ class JobManager:
                 job.progress.eta_s = data.get("eta_s", job.progress.eta_s)
 
         try:
+            if job.source_url and job.input_path is None:
+                job.progress.stage = "downloading"
+                from app.media_api import extract_audio_from_url
+
+                job.input_path = extract_audio_from_url(job.source_url, on_progress=on_prog)
+                logger.info(f"[worker] Job {job.job_id} downloaded {job.input_path.name}")
+                if job.is_cancelled():
+                    raise CancelledError("Processing cancelled by user")
+                job.progress.stage = "loading"
+                job.progress.progress_pct = 0.0
+
             cfg = build_config(speed=job.speed, preset=job.preset, backend="rubberband", uniform=job.uniform)
             y = sio.load(job.input_path, cfg.sample_rate)
             in_dur = len(y) / cfg.sample_rate

@@ -920,7 +920,7 @@
       try {
         let jobId;
         if (inputMode === 'url') {
-          document.getElementById('progressStageText').textContent = 'Downloading media from URL via yt-dlp...';
+          document.getElementById('progressStageText').textContent = 'Queueing download…';
           const res = await fetch('/api/v1/ingest/url', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
