@@ -1350,19 +1350,33 @@
     // scroll event (already in position) or fires several (smooth scrolling), and once it
     // is permanently positive the user can never take over.
     let trAutoScrollUntil = 0;
+    let trDriver = 'audioPlayer';   // which element the highlight currently follows
+
+    function clearTranscriptView() {
+      // Not just hiding: leaving the previous file's ~6,000 spans in the document keeps
+      // hundreds of KB alive and lets a stray tick highlight text that is no longer on
+      // screen, so the next thing to show the card would show the wrong transcript.
+      document.getElementById('transcriptCard').style.display = 'none';
+      document.getElementById('transcriptBody').innerHTML = '';
+      document.getElementById('transcriptSearch').value = '';
+      trSegments = [];
+      trWords = [];
+      trDriver = 'audioPlayer';
+    }
 
     async function loadTranscriptView(outputName) {
       const card = document.getElementById('transcriptCard');
       stopTranscriptTracking();
-      if (!outputName) { card.style.display = 'none'; return; }
+      if (!outputName) { clearTranscriptView(); return; }
 
       let data;
       try {
         const res = await fetch('/api/v1/transcript/' + encodeURIComponent(outputName));
-        if (!res.ok) { card.style.display = 'none'; return; }
+        if (!res.ok) { clearTranscriptView(); return; }
         data = await res.json();
-      } catch (e) { card.style.display = 'none'; return; }
+      } catch (e) { clearTranscriptView(); return; }
 
+      trDriver = 'audioPlayer';
       renderTranscript(data);
       card.style.display = 'block';
       startTranscriptTracking();
@@ -1415,13 +1429,25 @@
     }
 
     function activeMediaElement() {
-      // Whichever is actually playing drives the highlight. The video is the 1x source, so
-      // it needs source times; the audio is the compressed output and needs warped ones.
+      // The video is the 1x source, so it needs source times; the audio is the compressed
+      // output and needs warped ones. Whichever is *playing* takes over, but the choice is
+      // sticky: reading "is the video paused?" each tick meant that pausing the video
+      // yanked the transcript to wherever the audio happened to sit, hundreds of lines away.
       const video = document.getElementById('videoPlayer');
-      if (video && video.getAttribute('src') && !video.paused) return {el: video, source: true};
       const audio = document.getElementById('audioPlayer');
-      if (audio && audio.getAttribute('src')) return {el: audio, source: false};
-      return null;
+      const playable = (el) => el && el.getAttribute('src');
+
+      if (playable(video) && !video.paused) trDriver = 'videoPlayer';
+      else if (playable(audio) && !audio.paused) trDriver = 'audioPlayer';
+
+      let el = document.getElementById(trDriver);
+      if (!playable(el)) {
+        // The remembered element lost its source; fall back to whichever still has one.
+        el = playable(audio) ? audio : (playable(video) ? video : null);
+        if (!el) return null;
+        trDriver = el.id;
+      }
+      return {el, source: trDriver === 'videoPlayer'};
     }
 
     function wordIndexAt(time, useSource) {
@@ -1930,6 +1956,13 @@
     }
     sendHeartbeat();
     setInterval(sendHeartbeat, 5000);
+
+    // Browsers throttle this interval to roughly once a minute in a hidden tab, so beat
+    // the moment the tab is looked at again rather than waiting for the next throttled
+    // tick. The server tolerates the gap (CLIENT_SESSION_TTL); this just closes it faster.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) sendHeartbeat();
+    });
 
     window.addEventListener('beforeunload', () => {
       navigator.sendBeacon('/api/v1/client-disconnect', JSON.stringify({session_id: sessionId}));

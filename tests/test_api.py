@@ -410,3 +410,41 @@ def test_sync_rejects_a_transcript_outside_permitted_roots():
         "output_name": "x_5x_fast.wav", "transcript_path": "/etc/passwd",
     })
     assert resp.status_code == 403
+
+
+# --------------------------------------------------------------------------- client sessions
+
+def test_session_window_tolerates_a_throttled_background_tab():
+    """Browsers throttle setInterval to about once a minute in a hidden tab. The window
+    must exceed that, or an open-but-backgrounded window is forgotten and the watchdog
+    shuts the service down underneath it -- which is exactly what used to happen at 12s."""
+    from app.api import SessionManager
+
+    mgr = SessionManager()
+    assert mgr.session_ttl > 60.0, "must outlast a once-per-minute throttled heartbeat"
+
+
+def test_a_heartbeat_keeps_a_client_counted_well_past_the_old_window():
+    import time as _time
+    from app.api import SessionManager
+
+    mgr = SessionManager()
+    mgr.sessions["tab"] = _time.time() - 30.0   # silent for 30s, as a hidden tab would be
+    assert mgr.active_client_count() == 1
+
+
+def test_a_long_silent_client_is_eventually_dropped():
+    import time as _time
+    from app.api import SessionManager
+
+    mgr = SessionManager()
+    mgr.sessions["gone"] = _time.time() - (mgr.session_ttl + 5)
+    assert mgr.active_client_count() == 0
+
+
+def test_explicit_disconnect_does_not_wait_for_the_window():
+    """Closing a tab sends a beacon, so a clean close still releases RAM promptly."""
+    client.post("/api/v1/heartbeat", json={"session_id": "closing_tab"})
+    before = client.get("/health").json()["active_clients"]
+    client.post("/api/v1/client-disconnect", json={"session_id": "closing_tab"})
+    assert client.get("/health").json()["active_clients"] == before - 1

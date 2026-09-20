@@ -124,6 +124,13 @@ class SessionManager:
         self.last_active_time: float = time.time()
         self.auto_close: bool = os.getenv("AUTO_CLOSE", "true").lower() in ("true", "1", "yes")
         self.idle_timeout: int = int(os.getenv("IDLE_TIMEOUT", "60"))
+        # How long a client counts as present after its last heartbeat. This MUST exceed
+        # the worst-case heartbeat interval, and the client beats every 5s only while
+        # visible: browsers throttle background-tab timers to about once a minute. At the
+        # old 12s a backgrounded tab was forgotten within seconds and the watchdog shut
+        # the service down underneath an open window. Closing a tab does not rely on this
+        # -- beforeunload sends an explicit disconnect.
+        self.session_ttl: float = float(os.getenv("CLIENT_SESSION_TTL", "90"))
 
     def mark_activity(self):
         self.last_active_time = time.time()
@@ -138,7 +145,8 @@ class SessionManager:
 
     def active_client_count(self) -> int:
         now = time.time()
-        self.sessions = {sid: ts for sid, ts in self.sessions.items() if now - ts < 12.0}
+        self.sessions = {sid: ts for sid, ts in self.sessions.items()
+                         if now - ts < self.session_ttl}
         return len(self.sessions)
 
     def inc_job(self):
