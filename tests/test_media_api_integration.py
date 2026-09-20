@@ -42,3 +42,20 @@ def test_ingest_url_validation():
 def test_transcribe_file_not_found():
     resp = client.post("/api/v1/transcribe/non_existent_file_999.wav", json={"engine": "parakeet"})
     assert resp.status_code == 404
+
+
+def test_ingest_url_rejects_non_http_urls():
+    """yt-dlp takes the URL positionally, so a leading '-' would be parsed as an option."""
+    from app.media_api import extract_audio_from_url
+
+    for bad in ("--exec=touch /tmp/pwned", "-J", "file:///etc/passwd", "ftp://x/y", ""):
+        with pytest.raises(ValueError):
+            extract_audio_from_url(bad)
+
+
+def test_ingest_url_route_rejects_argument_injection():
+    resp = client.post("/api/v1/ingest/url", json={
+        "url": "--exec=touch /tmp/speedman_pwned", "speed": 5.0,
+    })
+    assert resp.status_code == 400
+    assert not Path("/tmp/speedman_pwned").exists()

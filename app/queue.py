@@ -21,6 +21,8 @@ from speedman.config import build_config
 from speedman.pipeline import process
 from speedman.chunking import CancelledError
 
+from app.paths import to_windows_path
+
 logger = logging.getLogger("speedman_queue")
 
 
@@ -211,10 +213,14 @@ class JobManager:
                 cancel_check=job.is_cancelled,
             )
 
+            # A cancel landing after the last in-pipeline check would otherwise be
+            # overwritten by "completed" below -- and write an output file nobody wants.
+            if job.is_cancelled():
+                raise CancelledError("Processing cancelled by user")
+
             stem = job.input_path.stem
-            fmt = job.output_format.lower().lstrip(".")
-            ext = f".{fmt}" if fmt in ("wav", "mp3", "m4a", "flac") else ".wav"
-            out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}{ext}"
+            fmt = sio.normalize_output_format(job.output_format)
+            out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}.{fmt}"
             out_path = job.output_dir / out_name
             sio.save(out_path, res.audio, res.sr)
             out_dur = len(res.audio) / res.sr
@@ -225,10 +231,14 @@ class JobManager:
                 "status": "success",
                 "filename": out_name,
                 "output_path": str(out_path),
+                # The Studio shows this verbatim, so it has to match what /compress
+                # returns -- otherwise queued jobs display a /mnt/d/... path.
+                "windows_output_path": to_windows_path(out_path),
                 "audio_url": f"/api/v1/audio/{out_name}",
                 "speed": job.speed,
                 "preset": job.preset,
                 "uniform": job.uniform,
+                "format": fmt,
                 "input_duration_s": round(in_dur, 2),
                 "output_duration_s": round(out_dur, 2),
                 "compression_ratio": round(in_dur / max(out_dur, 0.001), 2),

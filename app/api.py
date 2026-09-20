@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import random
-import re
 import shutil
 import signal
 import sys
@@ -30,6 +29,7 @@ from pydantic import BaseModel, Field
 from speedman import io as sio
 from speedman.config import PRESETS, build_config
 from speedman.pipeline import process
+from app.paths import normalize_path, to_windows_path, is_within
 from app.range_response import range_stream_file
 from app.queue import job_queue, SpeedmanJob
 from app.media_api import (
@@ -74,37 +74,41 @@ ALLOWED_ROOTS = [
 ]
 
 
-def normalize_path(path_input: str | Path) -> Path:
-    r"""Seamlessly normalize Windows (D:\...) and WSL (/mnt/d/...) file paths."""
-    s = str(path_input).strip().strip('"').strip("'")
-    if re.match(r"^[a-zA-Z]:[\\/]", s):
-        drive = s[0].lower()
-        rest = s[2:].replace("\\", "/").lstrip("/")
-        return Path(f"/mnt/{drive}/{rest}")
-    return Path(s)
-
-
-def to_windows_path(path_input: str | Path) -> str:
-    r"""Convert WSL (/mnt/d/...) path to Windows (D:\...) path."""
-    s = str(path_input).strip().strip('"').strip("'")
-    if s.startswith("/mnt/") and len(s) > 6 and s[6] == "/":
-        drive = s[5].upper()
-        rest = s[7:].replace("/", "\\")
-        return f"{drive}:\\{rest}"
-    return s
-
-
 def is_path_allowed(target: Path) -> bool:
-    """True when target resolves to one of ALLOWED_ROOTS or inside it."""
-    try:
-        resolved = target.resolve()
-        for root in ALLOWED_ROOTS:
-            resolved_root = root.resolve()
-            if resolved == resolved_root or resolved.is_relative_to(resolved_root):
-                return True
-    except Exception:
-        return False
-    return False
+    """True when target resolves to one of ALLOWED_ROOTS or inside it.
+
+    This governs which files may be read *as compression input*, which is why it spans
+    most of D:. It is deliberately NOT used to decide what may be served back over
+    HTTP -- see resolve_output_file().
+    """
+    return any(is_within(target, root) for root in ALLOWED_ROOTS)
+
+
+def resolve_output_file(filename: str) -> Path:
+    r"""Resolve a client-supplied name to a file inside OUTPUT_DIR, or raise 404.
+
+    Validating against ALLOWED_ROOTS here would be a directory traversal: those roots
+    cover D:\Workspace, D:\AI and D:\OBVLT, so ".." segments (or their percent-encoded
+    form, which the client never collapses) let a caller stream any file in those trees.
+    Everything Speedman produces lives under OUTPUT_DIR, so that is the only root worth
+    honouring.
+    """
+    clean = str(filename).strip("/\\")
+    out_root = OUTPUT_DIR.resolve()
+
+    target = (out_root / clean).resolve()
+    if target.is_file() and is_within(target, out_root):
+        return target
+
+    # Bare-name lookup, so /api/v1/audio/<name> still finds files in subfolders
+    # (comparison sets, downloads). rglob is rooted at OUTPUT_DIR, so it cannot escape.
+    name_only = Path(clean).name
+    if name_only:
+        for candidate in sorted(out_root.rglob(name_only)):
+            if candidate.is_file() and is_within(candidate, out_root):
+                return candidate
+
+    raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
 
 
 # --------------------------------------------------------------------------- Session & Watchdog
@@ -200,11 +204,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# The Studio UI is served from this same origin, so it needs no CORS grant at all. A
+# wildcard therefore only grants access to *other* pages the user happens to be visiting,
+# which on a loopback service with file-read and shutdown routes is a liability. Override
+# with SPEEDMAN_CORS_ORIGINS="http://host:port,..." if another local client needs in.
+_cors_env = os.getenv("SPEEDMAN_CORS_ORIGINS", "").strip()
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env
+    else ["http://127.0.0.1:8081", "http://localhost:8081"]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -306,6 +321,18 @@ def list_presets():
     }
 
 
+def require_output_format(fmt: str) -> str:
+    """Normalise a requested output format, or 400.
+
+    Never silently downgrades to wav: the old fallback wrote a .wav file while still
+    reporting back whatever format the caller had asked for.
+    """
+    try:
+        return sio.normalize_output_format(fmt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def get_audio_media_type(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".mp3":
@@ -321,26 +348,30 @@ def get_audio_media_type(path: Path) -> str:
 
 @app.get("/api/v1/audio/{filename:path}")
 def stream_audio(filename: str, request: Request):
-    clean = filename.strip("/\\")
-    target = (OUTPUT_DIR / clean).resolve()
-    if target.is_file() and is_path_allowed(target):
-        return range_stream_file(target, request, media_type=get_audio_media_type(target))
-
-    file_name_only = Path(clean).name
-    candidates = [p for p in OUTPUT_DIR.rglob(file_name_only) if p.is_file() and is_path_allowed(p)]
-    if candidates:
-        return range_stream_file(candidates[0], request, media_type=get_audio_media_type(candidates[0]))
-
-    raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
+    target = resolve_output_file(filename)
+    return range_stream_file(target, request, media_type=get_audio_media_type(target))
 
 
 # --------------------------------------------------------------------------- Synchronous Compression
 
-def _run_compression(src_path: Path, stem: str, speed: float, preset: str, uniform: bool, format: str = "wav") -> dict[str, Any]:
+def _run_compression(
+    src_path: Path,
+    stem: str,
+    speed: float,
+    preset: str,
+    uniform: bool,
+    format: str = "wav",
+    trusted_path: bool = False,
+) -> dict[str, Any]:
+    """trusted_path=True for server-created temp files. Their location is ours, not the
+    caller's, so checking them against ALLOWED_ROOTS can only misfire -- every upload
+    would start 403-ing if TMPDIR ever moved off /tmp."""
     if preset not in PRESETS:
         raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'. Available: {list(PRESETS.keys())}")
 
-    if not is_path_allowed(src_path):
+    fmt = require_output_format(format)
+
+    if not trusted_path and not is_path_allowed(src_path):
         raise HTTPException(status_code=403, detail=f"Input path '{src_path}' is outside permitted workstation roots")
 
     if not src_path.is_file():
@@ -353,9 +384,7 @@ def _run_compression(src_path: Path, stem: str, speed: float, preset: str, unifo
 
     res = process(y, cfg.sample_rate, cfg)
 
-    fmt = format.lower().lstrip(".")
-    ext = f".{fmt}" if fmt in ("wav", "mp3", "m4a", "flac") else ".wav"
-    out_name = f"{stem}_{speed:g}x_{preset}{'_uniform' if uniform else ''}{ext}"
+    out_name = f"{stem}_{speed:g}x_{preset}{'_uniform' if uniform else ''}.{fmt}"
     out_path = OUTPUT_DIR / out_name
     sio.save(out_path, res.audio, res.sr)
     out_dur = len(res.audio) / res.sr
@@ -408,7 +437,9 @@ async def compress_audio_multipart(
         else:
             raise HTTPException(status_code=400, detail="Must provide either 'file' upload or 'input_path'")
 
-        return _run_compression(src_path, stem, speed, preset, uniform, format=format)
+        return _run_compression(
+            src_path, stem, speed, preset, uniform, format=format, trusted_path=temp_in is not None
+        )
     finally:
         if temp_in and temp_in.exists():
             try:
@@ -440,13 +471,17 @@ async def queue_compress_job(req: CompressRequest):
     if not src_path.is_file():
         raise HTTPException(status_code=404, detail=f"Input file not found: {src_path}")
 
+    fmt = require_output_format(req.format)
+    if req.preset not in PRESETS:
+        raise HTTPException(status_code=400, detail=f"Unknown preset '{req.preset}'. Available: {list(PRESETS.keys())}")
+
     job = job_queue.submit(
         input_path=src_path,
         speed=req.speed,
         preset=req.preset,
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
-        output_format=req.format,
+        output_format=fmt,
     )
     return {
         "status": "queued",
@@ -505,6 +540,7 @@ def media_api_library():
 @app.post("/api/v1/ingest/url")
 async def ingest_url_and_compress(req: IngestUrlRequest):
     """Extracts audio from a YouTube/web URL and queues it for Speedman compression."""
+    fmt = require_output_format(req.format)
     try:
         downloaded_path = extract_audio_from_url(req.url)
     except Exception as e:
@@ -516,7 +552,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
         preset=req.preset,
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
-        output_format=req.format,
+        output_format=fmt,
     )
     return {
         "status": "queued",
@@ -532,14 +568,7 @@ async def ingest_url_and_compress(req: IngestUrlRequest):
 def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeRequest] = None):
     """Sends an audio file from Speedman's output to Media API for Speech-To-Text."""
     req = req or TranscribeRequest()
-    clean = filename.strip("/\\")
-    target = (OUTPUT_DIR / clean).resolve()
-    if not target.is_file() or not is_path_allowed(target):
-        # Search by filename
-        candidates = [p for p in OUTPUT_DIR.rglob(Path(clean).name) if p.is_file() and is_path_allowed(p)]
-        if not candidates:
-            raise HTTPException(status_code=404, detail=f"Audio file '{clean}' not found")
-        target = candidates[0]
+    target = resolve_output_file(filename)
 
     try:
         res = send_to_media_api_transcribe(target, engine=req.engine)

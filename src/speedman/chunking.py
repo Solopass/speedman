@@ -1,8 +1,15 @@
 """Long-audio chunking engine for Speedman.
 
-Enables multi-hour audiobooks and long podcasts to be processed with a fixed, low RAM
-ceiling by cutting on natural boundary pauses identified by VAD, processing each block
-independently, and stitching with zero phase click artifacts.
+Cuts multi-hour audiobooks and podcasts on natural boundary pauses identified by VAD,
+processes each block independently, and stitches them with a micro-fade so there are no
+phase clicks at the seams. Chunking is what makes per-chunk progress reporting and
+mid-run cancellation possible, and it bounds the size of the arrays the *backend* sees.
+
+It does NOT bound total process memory: `io.load` decodes the whole input up front, and
+`process_chunked` accumulates every output chunk before concatenating, so peak usage is
+roughly input + output + one output copy. A 10-hour file at 24 kHz float32 is ~3.5 GB of
+input on its own. Streaming chunks to disk and concatenating at the file level is the fix
+if that ceiling ever matters.
 """
 from __future__ import annotations
 

@@ -34,11 +34,24 @@ def range_stream_file(
 
     try:
         unit, spec = range_header.strip().split("=", 1)
-        if unit != "bytes":
-            raise ValueError()
-        parts = spec.split("-", 1)
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if parts[1] else file_size - 1
+        if unit.strip().lower() != "bytes":
+            raise ValueError("only byte ranges are supported")
+        if "," in spec:
+            raise ValueError("multipart ranges are not supported")
+
+        first, _, last = spec.strip().partition("-")
+        if not first:
+            # Suffix range: "bytes=-500" means the LAST 500 bytes, not bytes 0-500.
+            # Players use this to probe container metadata at the end of a file.
+            suffix_len = int(last)
+            if suffix_len <= 0:
+                raise ValueError("empty suffix range")
+            start = max(0, file_size - suffix_len)
+            end = file_size - 1
+        else:
+            start = int(first)
+            # RFC 9110: an end past EOF is clamped, not rejected.
+            end = min(int(last), file_size - 1) if last else file_size - 1
     except Exception:
         raise HTTPException(
             status_code=416,
@@ -46,7 +59,7 @@ def range_stream_file(
             headers={"Content-Range": f"bytes */{file_size}"},
         )
 
-    if start >= file_size or end >= file_size or start > end:
+    if start >= file_size or start > end:
         raise HTTPException(
             status_code=416,
             detail="Requested range not satisfiable",

@@ -189,3 +189,119 @@ def test_compress_mp3_format(synthetic_wav):
     assert audio_resp.status_code in (200, 206)
     assert "audio/mpeg" in audio_resp.headers["content-type"]
 
+
+
+# --------------------------------------------------------------------------- Regression tests
+
+def test_audio_endpoint_rejects_traversal_outside_output_dir():
+    """ALLOWED_ROOTS spans most of D:, so the audio route must validate against
+    OUTPUT_DIR instead. Percent-encoded dots are the interesting case: HTTP clients
+    collapse a literal '..' before it ever reaches the server."""
+    for path in (
+        "/api/v1/audio/%2e%2e%2f%2e%2e%2fWorkspace%2fspeedman%2fCLAUDE.md",
+        "/api/v1/audio/%2e%2e/%2e%2e/AI/Memory/global/rules.md",
+        "/api/v1/audio/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    ):
+        resp = client.get(path)
+        assert resp.status_code == 404, f"{path} leaked a file outside OUTPUT_DIR"
+
+
+def test_transcribe_rejects_traversal_outside_output_dir():
+    resp = client.post(
+        "/api/v1/transcribe/%2e%2e%2f%2e%2e%2fWorkspace%2fspeedman%2fCLAUDE.md",
+        json={"engine": "parakeet"},
+    )
+    assert resp.status_code == 404
+
+
+def test_cors_is_not_wildcard():
+    """A wildcard lets any page the user visits drive this loopback service."""
+    resp = client.get("/health", headers={"Origin": "https://evil.example"})
+    assert resp.headers.get("access-control-allow-origin") is None
+
+    resp = client.get("/health", headers={"Origin": "http://127.0.0.1:8081"})
+    assert resp.headers.get("access-control-allow-origin") == "http://127.0.0.1:8081"
+
+
+def test_unsupported_format_is_rejected_not_silently_downgraded(synthetic_wav):
+    """The old code wrote a .wav but echoed back the format the caller asked for."""
+    resp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast", "format": "ogg",
+    })
+    assert resp.status_code == 400
+    assert "ogg" in resp.json()["detail"]
+
+    resp = client.post("/api/v1/jobs/compress", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast", "format": "bogus",
+    })
+    assert resp.status_code == 400
+
+
+def test_queued_job_rejects_unknown_preset(synthetic_wav):
+    resp = client.post("/api/v1/jobs/compress", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "no_such_preset",
+    })
+    assert resp.status_code == 400
+
+
+def test_compress_flac_format(synthetic_wav):
+    resp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast", "format": "flac",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["format"] == "flac"
+    assert data["filename"].endswith(".flac")
+    assert Path(data["output_path"]).is_file()
+    assert client.get(data["audio_url"]).status_code == 200
+
+
+def test_suffix_range_returns_tail_of_file(synthetic_wav):
+    """'bytes=-500' means the LAST 500 bytes; the old parser read bytes 0-500."""
+    comp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast",
+    }).json()
+    url = comp["audio_url"]
+    size = int(client.get(url).headers["content-length"])
+
+    resp = client.get(url, headers={"Range": "bytes=-500"})
+    assert resp.status_code == 206
+    assert resp.headers["content-range"] == f"bytes {size - 500}-{size - 1}/{size}"
+    assert len(resp.content) == 500
+
+
+def test_range_end_past_eof_is_clamped(synthetic_wav):
+    comp = client.post("/api/v1/compress/json", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast",
+    }).json()
+    url = comp["audio_url"]
+    size = int(client.get(url).headers["content-length"])
+
+    resp = client.get(url, headers={"Range": f"bytes=0-{size + 99999}"})
+    assert resp.status_code == 206
+    assert resp.headers["content-range"] == f"bytes 0-{size - 1}/{size}"
+
+    # A start beyond EOF is still unsatisfiable.
+    assert client.get(url, headers={"Range": f"bytes={size + 10}-"}).status_code == 416
+
+
+def test_queued_job_result_carries_windows_output_path(synthetic_wav):
+    """The Studio renders this field directly; without it queued jobs showed /mnt/d/..."""
+    import time
+
+    resp = client.post("/api/v1/jobs/compress", json={
+        "input_path": str(synthetic_wav), "speed": 5.0, "preset": "fast", "format": "wav",
+    })
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    for _ in range(200):
+        job = client.get(f"/api/v1/jobs/{job_id}").json()
+        if job["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.1)
+
+    assert job["status"] == "completed", job.get("error")
+    result = job["result"]
+    assert result["windows_output_path"].startswith("D:\\")
+    assert result["format"] == "wav"

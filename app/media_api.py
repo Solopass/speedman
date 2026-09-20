@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -16,7 +17,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import httpx
 
+from app.paths import to_windows_path
+
 logger = logging.getLogger("speedman_media_api")
+
+_HTTP_URL_RE = re.compile(r"^https?://\S", re.IGNORECASE)
 
 MEDIA_API_BASE = os.getenv("MEDIA_API_URL", "http://127.0.0.1:8080")
 MEDIA_API_AUDIO_DIR = Path("/mnt/d/Output/Audio")
@@ -25,14 +30,31 @@ DOWNLOADS_DIR = Path("/mnt/d/Audio/Speed/downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def check_media_api_online() -> bool:
-    """Returns True if Media API on port 8080 is reachable."""
+_ONLINE_CACHE_TTL = 10.0
+_online_cache: tuple[float, bool] = (0.0, False)
+
+
+def check_media_api_online(force: bool = False) -> bool:
+    """Returns True if Media API on port 8080 is reachable.
+
+    Cached for _ONLINE_CACHE_TTL seconds: /health calls this, and an uncached miss costs
+    the full 1.5s timeout whenever Media API is down. Pass force=True to re-probe.
+    """
+    global _online_cache
+    checked_at, cached = _online_cache
+    now = time.monotonic()
+    if not force and now - checked_at < _ONLINE_CACHE_TTL:
+        return cached
+
     try:
         with httpx.Client(timeout=1.5) as client:
             resp = client.get(f"{MEDIA_API_BASE}/api/v1/health")
-            return resp.status_code == 200
+            online = resp.status_code == 200
     except Exception:
-        return False
+        online = False
+
+    _online_cache = (now, online)
+    return online
 
 
 def get_media_api_health() -> Optional[Dict[str, Any]]:
@@ -58,15 +80,24 @@ def list_media_library(limit: int = 30) -> List[Dict[str, Any]]:
                 if p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".mp4", ".webm"):
                     candidates.append(p)
 
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    def mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:  # file vanished between iterdir() and stat()
+            return 0.0
+
+    candidates.sort(key=mtime, reverse=True)
 
     items = []
     for p in candidates[:limit]:
-        st = p.stat()
+        try:
+            st = p.stat()
+        except OSError:
+            continue
         items.append({
             "filename": p.name,
             "path": str(p),
-            "windows_path": f"D:\\{p.relative_to(Path('/mnt/d')).as_posix().replace('/', '\\')}",
+            "windows_path": to_windows_path(p),
             "size_mb": round(st.st_size / (1024 * 1024), 2),
             "modified": time.ctime(st.st_mtime),
             "category": "audio" if p.suffix.lower() in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus") else "video",
@@ -75,14 +106,21 @@ def list_media_library(limit: int = 30) -> List[Dict[str, Any]]:
 
 
 def extract_audio_from_url(url: str) -> Path:
-    """Extracts audio from a YouTube or web media URL.
-    
-    If Media API is running, delegates to Media API.
-    Otherwise, invokes yt-dlp directly on E-cores into DOWNLOADS_DIR.
+    """Extracts audio from a YouTube or web media URL by invoking yt-dlp on E-cores
+    into DOWNLOADS_DIR.
+
+    (Delegating to Media API when it is up would save a second download, but that path
+    is not implemented -- this always shells out to yt-dlp.)
     """
+    url = str(url or "").strip()
+    # yt-dlp takes the URL as a positional argument, so a value beginning with "-" would
+    # be parsed as an option (--exec, --config-location, ...). The scheme check plus the
+    # "--" terminator below keep caller input out of yt-dlp's option parser.
+    if not _HTTP_URL_RE.match(url):
+        raise ValueError("Only http:// and https:// URLs can be ingested")
+
     logger.info(f"[media_api] Extracting audio for URL: {url}")
 
-    # Fallback to local yt-dlp on E-cores
     ytdlp_bin = shutil.which("yt-dlp")
     if not ytdlp_bin:
         # Check standard paths
@@ -95,9 +133,17 @@ def extract_audio_from_url(url: str) -> Path:
         raise RuntimeError("yt-dlp is not installed or available on PATH")
 
     out_template = str(DOWNLOADS_DIR / "%(title).200B.%(ext)s")
+
+    # E-core pinning is a nicety, not a requirement: if the tools are missing, download
+    # unpinned rather than failing with FileNotFoundError on taskset.
+    prefix: List[str] = []
+    if shutil.which("taskset"):
+        prefix += ["taskset", "-c", "8-15"]
+    if shutil.which("nice"):
+        prefix += ["nice", "-n", "10"]
+
     cmd = [
-        "taskset", "-c", "8-15",
-        "nice", "-n", "10",
+        *prefix,
         ytdlp_bin,
         "-x",  # Extract audio
         "--audio-format", "wav",
@@ -105,6 +151,7 @@ def extract_audio_from_url(url: str) -> Path:
         "--no-playlist",
         "-o", out_template,
         "--print", "after_move:filepath",
+        "--",  # end of options; everything after this is a positional URL
         url,
     ]
 

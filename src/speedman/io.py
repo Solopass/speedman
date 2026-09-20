@@ -17,6 +17,22 @@ import soundfile as sf
 WORKING_SR = 24000
 _FFMPEG_EXTS = {".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".webm", ".flac", ".wma"}
 
+OUTPUT_FORMATS = ("wav", "mp3", "m4a", "flac")
+"""The formats `save()` has explicit encoder settings for. Callers that accept a
+user-supplied format should route it through `normalize_output_format` first."""
+
+
+def normalize_output_format(fmt: str) -> str:
+    """Lowercase, strip a leading dot, and reject anything `save()` cannot write.
+
+    Raises ValueError rather than falling back to wav: a silent fallback produces a file
+    whose extension disagrees with what the caller was told it received.
+    """
+    f = str(fmt or "wav").strip().lower().lstrip(".")
+    if f not in OUTPUT_FORMATS:
+        raise ValueError(f"unsupported output format {fmt!r}; choose from {list(OUTPUT_FORMATS)}")
+    return f
+
 
 def have_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None

@@ -509,6 +509,7 @@
               <button class="btn-preset active" id="fmtWav" onclick="setFormat('wav', this)">WAV (Lossless)</button>
               <button class="btn-preset" id="fmtMp3" onclick="setFormat('mp3', this)">MP3 (192k Compact)</button>
               <button class="btn-preset" id="fmtM4a" onclick="setFormat('m4a', this)">M4A (Apple/Mobile)</button>
+              <button class="btn-preset" id="fmtFlac" onclick="setFormat('flac', this)">FLAC (Lossless Compact)</button>
             </div>
           </div>
         </div>
@@ -778,7 +779,7 @@
 
     function setFormat(fmt, btn) {
       selectedFormat = fmt;
-      document.querySelectorAll('#fmtWav, #fmtMp3, #fmtM4a').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.preset-buttons button[onclick^="setFormat"]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
     }
 
@@ -796,7 +797,12 @@
       const playerCard = document.getElementById('playerCard');
 
       processBtn.disabled = true;
-      statusBar.style.display = 'none';
+      // Reset via the class, not an inline style: `.status-bar.success`/`.error` supply
+      // `display: block` from the stylesheet, and an inline `display: none` outranks them
+      // -- which silently hid every result and error message after the first run.
+      statusBar.className = 'status-bar';
+      statusBar.textContent = '';
+      statusBar.style.display = '';
       playerCard.classList.remove('active');
 
       const speed = parseFloat(document.getElementById('speedSlider').value);
@@ -908,6 +914,10 @@
     }
 
     let waveformBars = [];
+    // NOTE: these bars are randomised placeholders, NOT the real signal -- nothing here
+    // has access to the decoded audio. It works as a scrub bar and progress indicator,
+    // but the peaks are meaningless. Drawing the true envelope needs the backend to
+    // return a downsampled peak array alongside the result.
     function initWaveform() {
       const canvas = document.getElementById('waveformCanvas');
       if (!canvas) return;
@@ -996,15 +1006,17 @@
       if (p) p.playbackRate = rate;
     }
 
-    // Global keyboard shortcuts
+    // Global keyboard shortcuts: Space/K toggles, J/L and arrows seek +/-5s, [ ] adjust rate.
+    // NOTE: this is the only keydown listener -- a second one duplicating it made Space a
+    // no-op (play then pause) and turned every seek into +/-10s.
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
       const player = document.getElementById('audioPlayer');
       if (!player || !player.src) return;
 
-      if (e.code === 'Space') {
+      if (e.code === 'Space' || e.code === 'KeyK') {
         e.preventDefault();
-        if (player.paused) player.play(); else player.pause();
+        if (player.paused) player.play().catch(() => {}); else player.pause();
       } else if (e.code === 'KeyJ' || e.code === 'ArrowLeft') {
         e.preventDefault();
         seekRelative(-5);
@@ -1137,25 +1149,6 @@
         alert('Could not reveal keys: ' + e.message);
       }
     }
-
-    // Keyboard Shortcuts: Space, ArrowLeft, ArrowRight, J, L, K
-    window.addEventListener('keydown', (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-      const audio = document.getElementById('audioPlayer');
-      if (!audio || !audio.src) return;
-
-      if (e.code === 'Space' || e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        if (audio.paused) audio.play().catch(() => {});
-        else audio.pause();
-      } else if (e.code === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
-        e.preventDefault();
-        seekRelative(-5);
-      } else if (e.code === 'ArrowRight' || e.key.toLowerCase() === 'l') {
-        e.preventDefault();
-        seekRelative(5);
-      }
-    });
 
     // Keepalive Heartbeat
     const sessionId = 'speedman_' + Math.random().toString(36).substring(2, 10);
