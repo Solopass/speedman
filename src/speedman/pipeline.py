@@ -53,7 +53,8 @@ def process(
 
     t = {}
     notes: dict = {}
-    backend = get_backend(cfg.backend)
+    r3_requested = getattr(cfg, "engine", "r2") == "r3"
+    backend = get_backend(cfg.backend, r3=r3_requested, crispness=getattr(cfg, "crispness", None))
 
     def step(msg):
         if on_progress:
@@ -116,7 +117,7 @@ def process(
     t["post"] = time.perf_counter() - t0
 
     target = len(y) / cfg.speed
-    notes["duration_error_pct"] = round((len(out) - target) / target * 100, 3)
+    notes["duration_error_pct"] = round((len(out) - target) / target * 100, 3) if target > 0 else 0.0
 
     if verbose:
         for k, v in t.items():

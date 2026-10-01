@@ -65,6 +65,22 @@ class PostConfig:
     presence_lo: float = 2000.0
     presence_hi: float = 5000.0
 
+    warmth_db: float = 0.0
+    """Low-mid vocal warmth/body lift at 280 Hz to counterbalance presence and prevent thin tone."""
+    warmth_freq: float = 280.0
+    warmth_q: float = 1.0
+
+    highpass_hz: float = 0.0
+    """Sub-bass high-pass filter cutoff to eliminate mic rumble and plosives. 0 to disable."""
+
+    deess_db: float = 0.0
+    """Dynamic de-esser attenuation ceiling (dB) targeting sibilance (5.5-8.5 kHz). 0 to disable."""
+    deess_lo: float = 5500.0
+    deess_hi: float = 8500.0
+
+    expander_db: float = 0.0
+    """Downward expansion in pauses to quiet room hiss. 0 to disable."""
+
     transient_db: float = 0.0
     """Onset-gated transient enhancement. Off by default -- it ships only if the
     eval table says it helps."""
@@ -85,6 +101,8 @@ class Config:
     speed: float = 5.0
     sample_rate: int = 24000
     backend: str = "rubberband"
+    engine: str = "r2"
+    crispness: int | None = None
     staged: bool = False
     uniform: bool = False
     """Disable non-uniform compression -- the control condition."""
@@ -93,26 +111,43 @@ class Config:
 
 
 PRESETS: dict[str, dict] = {
-    # Conservative: barely-there reallocation, gentle post chain.
+    # Conservative: barely-there reallocation, gentle post chain with warmth & rumble cut.
     "natural": dict(
         ratemap=RateMapConfig(silence_mult=2.0, protect_mult=0.85, crush_mult=1.4),
-        post=PostConfig(presence_db=1.5, drc_ratio=1.5),
+        post=PostConfig(presence_db=1.5, warmth_db=1.0, highpass_hz=60.0, deess_db=1.5, drc_ratio=1.5),
     ),
-    # The daily driver. Tuning effort concentrates here (PLAN.md target: 5-7x).
+    # The daily driver: clarity with vocal body warmth, sibilance taming & rumble highpass.
     "fast": dict(
         ratemap=RateMapConfig(),
-        post=PostConfig(),
+        post=PostConfig(presence_db=3.0, warmth_db=1.5, highpass_hz=70.0, deess_db=2.5),
+    ),
+    # High-fidelity studio mode: R3 fine engine, de-esser, rumble cut & vocal warmth.
+    "audiophile": dict(
+        backend="rubberband",
+        engine="r3",
+        crispness=5,
+        ratemap=RateMapConfig(silence_mult=2.2, protect_mult=0.8, crush_mult=1.6),
+        post=PostConfig(
+            presence_db=2.5,
+            warmth_db=2.0,
+            highpass_hz=80.0,
+            deess_db=4.0,
+            drc_ratio=1.8,
+            drc_threshold_db=-24.0,
+        ),
     ),
     "aggressive": dict(
         ratemap=RateMapConfig(silence_mult=3.0, protect_mult=0.6, crush_mult=2.5),
-        post=PostConfig(presence_db=4.0, drc_ratio=3.0),
+        post=PostConfig(presence_db=4.0, warmth_db=1.5, highpass_hz=80.0, deess_db=3.5, drc_ratio=3.0),
     ),
     "max": dict(
         ratemap=RateMapConfig(silence_mult=3.5, protect_mult=0.5, crush_mult=3.0,
                               floor_ms=20.0),
-        post=PostConfig(presence_db=4.0, drc_ratio=3.5, drc_threshold_db=-28.0),
+        post=PostConfig(presence_db=4.0, warmth_db=2.0, highpass_hz=90.0, deess_db=4.5,
+                        drc_ratio=3.5, drc_threshold_db=-28.0),
     ),
 }
+
 
 
 def build_config(speed: float, preset: str = "fast", **overrides) -> Config:

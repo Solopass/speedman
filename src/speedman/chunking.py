@@ -127,7 +127,8 @@ def process_chunked(
     total_chunks = len(chunks)
 
     t_start = time.perf_counter()
-    backend = get_backend(cfg.backend)
+    r3_requested = getattr(cfg, "engine", "r2") == "r3"
+    backend = get_backend(cfg.backend, r3=r3_requested, crispness=getattr(cfg, "crispness", None))
     out_pieces: List[np.ndarray] = []
     chunk_durations_in: List[float] = []
     chunk_durations_out: List[float] = []
@@ -287,7 +288,10 @@ def _stitch_time_map(in_bounds, out_pos, rates, n_in: int, n_out: int, sr: int):
 
     # np.interp needs a strictly increasing x, and chunk seams can land on the same
     # sample when a boundary pause is cut to nothing.
-    keep = np.concatenate([[True], np.diff(bounds) > 0])
+    diffs = np.diff(bounds) > 0
+    if len(all_rates) == len(diffs):
+        all_rates = all_rates[diffs]
+    keep = np.concatenate([[True], diffs])
     bounds, positions = bounds[keep], positions[keep]
     positions = np.maximum.accumulate(positions)
 

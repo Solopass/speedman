@@ -58,6 +58,7 @@ def _safe(y: np.ndarray) -> np.ndarray:
     """pyrubberband round-trips through a PCM_16 temp WAV, so anything above
     full scale is silently hard-clipped before rubberband ever sees it."""
     y = np.asarray(y, dtype=np.float32)
+    y = np.nan_to_num(y, nan=0.0, posinf=0.98, neginf=-0.98)
     peak = float(np.max(np.abs(y))) if y.size else 0.0
     return y / peak * 0.98 if peak >= 1.0 else y
 
@@ -160,8 +161,13 @@ class RubberBandStretcher(TimeStretcher):
     name = "rubberband"
     supports_time_map = True
 
-    def __init__(self, r3: bool = False):
-        self.rbargs = {"-3": ""} if r3 else None
+    def __init__(self, r3: bool = False, crispness: int | None = None):
+        args = {}
+        if r3:
+            args["-3"] = ""
+        if crispness is not None and 0 <= crispness <= 6:
+            args["-c"] = str(crispness)
+        self.rbargs = args if args else None
 
     def available(self) -> bool:
         return find_rubberband() is not None
@@ -195,9 +201,9 @@ class RubberBandStretcher(TimeStretcher):
         self._require()
         import pyrubberband as pyrb
         pairs = time_map.as_pairs() if hasattr(time_map, "as_pairs") else list(time_map)
-        if pairs[-1][0] != len(y):
+        if not pairs or pairs[-1][0] != len(y):
             raise ValueError(
-                f"time map must end at the input length: got {pairs[-1][0]}, expected {len(y)}")
+                f"time map must end at the input length: got {pairs[-1][0] if pairs else 'empty'}, expected {len(y)}")
         return pyrb.timemap_stretch(_safe(y), sr, pairs, rbargs=self.rbargs).astype(np.float32)
 
 
@@ -212,4 +218,8 @@ BACKENDS: dict[str, type[TimeStretcher]] = {
 def get_backend(name: str, **kw) -> TimeStretcher:
     if name not in BACKENDS:
         raise ValueError(f"unknown backend {name!r}; choose from {sorted(BACKENDS)}")
-    return BACKENDS[name](**kw)
+    cls = BACKENDS[name]
+    if name == "rubberband":
+        return cls(**kw)
+    return cls()
+
