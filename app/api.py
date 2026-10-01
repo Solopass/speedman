@@ -15,6 +15,7 @@ import random
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -22,7 +23,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, BackgroundTasks, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -30,8 +31,8 @@ from pydantic import BaseModel, Field
 from speedman import io as sio
 from speedman.config import PRESETS, build_config
 from speedman.pipeline import process
-from app import timemap_store, transcript as transcript_sync
-from app.paths import normalize_path, to_windows_path, is_within
+from app import timemap_store, transcript as transcript_sync, media_api
+from app.paths import normalize_path, to_windows_path, is_within, safe_stem
 from app.range_response import range_stream_file
 from app.queue import job_queue, SpeedmanJob
 from app.media_api import (
@@ -39,6 +40,7 @@ from app.media_api import (
     get_media_api_health,
     list_media_library,
     extract_audio_from_url,
+    ensure_ytdlp_updated,
     send_to_media_api_transcribe,
     validate_ingest_url,
 )
@@ -206,11 +208,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] video cache sweep skipped: {e}")
 
+    async def _startup_ytdlp_check():
+        await asyncio.sleep(3)
+        try:
+            from app.media_api import ensure_ytdlp_updated, should_check_ytdlp_update
+            if should_check_ytdlp_update():
+                await asyncio.to_thread(ensure_ytdlp_updated, force=False)
+        except Exception as e:
+            logger.warning(f"[startup] background yt-dlp update check failed: {e}")
+
+    ytdlp_task = asyncio.create_task(_startup_ytdlp_check())
     watchdog = asyncio.create_task(idle_watchdog())
     yield
     watchdog.cancel()
+    ytdlp_task.cancel()
     try:
         await watchdog
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ytdlp_task
     except asyncio.CancelledError:
         pass
 
@@ -234,14 +251,15 @@ _cors_env = os.getenv("SPEEDMAN_CORS_ORIGINS", "").strip()
 ALLOWED_ORIGINS = (
     [o.strip() for o in _cors_env.split(",") if o.strip()]
     if _cors_env
-    else ["http://127.0.0.1:8081", "http://localhost:8081"]
+    else ["http://127.0.0.1:8081", "http://localhost:8081", "null"]
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -262,6 +280,7 @@ class CompressRequest(BaseModel):
     uniform: bool = Field(False, description="Uniform constant-rate stretch (control mode)")
     format: str = Field("wav", description="Audio output format: wav | mp3 | m4a | flac")
     output_filename: Optional[str] = None
+    auto_obsidian: bool = Field(False, description="Automatically generate Obsidian note upon completion")
 
 
 class IngestUrlRequest(BaseModel):
@@ -295,6 +314,18 @@ class TranscribeRequest(BaseModel):
     )
 
 
+class TranscribePipelineRequest(BaseModel):
+    output_name: str = Field(..., description="Compressed filename to sync against")
+    source_path: Optional[str] = Field(None, description="The original audio source path")
+    engine: str = Field("parakeet", description="Speech-to-text engine: parakeet or whisper")
+    wait: bool = Field(False, description="If True, block until Media API transcription completes, then run sync")
+    timeout_s: float = Field(300.0, description="Max seconds to wait if wait=True")
+    auto_chapters: bool = Field(True, description="Auto-generate and cache semantic chapters on sync completion")
+    auto_obsidian: bool = Field(False, description="Auto-export summary note to Obsidian on completion")
+    obsidian_folder: str = Field("Summaries", description="Folder in 1Notebook for Obsidian note")
+    use_llm: bool = Field(True, description="Whether to use local LLM for summary/chapters")
+
+
 class CompareRequest(BaseModel):
     input_path: str = Field(..., description="Local path to audio file on workstation")
     speeds: List[float] = Field(default_factory=lambda: [4.0, 5.0, 6.0], description="List of target speeds to compare")
@@ -315,6 +346,42 @@ class ListeningVerdictRequest(BaseModel):
     trial_index: int
     choice: str = Field(..., description="a | b | none")
     followed: str = Field(..., description="both | picked | neither")
+
+
+class OpenFolderRequest(BaseModel):
+    folder: str = Field(..., description="Folder identifier: audio | videos | source_audio | video_cache")
+
+
+class ObsidianExportRequest(BaseModel):
+    output_name: str = Field(..., description="Target compressed audio or transcript stem")
+    folder: str = Field("Summaries", description="Subfolder in 1Notebook (e.g. Summaries, Digests)")
+    note_title: Optional[str] = Field(None, description="Custom note title, defaults to stem")
+    include_summary: bool = Field(True, description="Generate executive summary & key takeaways")
+    include_highlights: bool = Field(True, description="Include 5s marked quotes and bookmarks")
+    include_transcript: bool = Field(True, description="Include collapsible transcript outline")
+    custom_tags: Optional[List[str]] = Field(None, description="Additional Obsidian tags")
+    bookmarks: Optional[List[Dict[str, Any]]] = Field(None, description="Client-side bookmarks with timestamps and notes")
+    use_llm: bool = Field(True, description="Attempt local AI synthesis on :11440 with graceful fallback")
+
+
+class OpenObsidianNoteRequest(BaseModel):
+    path: str = Field(..., description="WSL or Windows path to the note")
+
+
+class GenerateChaptersRequest(BaseModel):
+    use_llm: bool = Field(True, description="Attempt local AI chapter labeling via :11440 with algorithmic fallback")
+    force_regenerate: bool = Field(False, description="Ignore cached chapters and recompute")
+
+
+class EditCueRequest(BaseModel):
+    line_index: int = Field(..., description="0-indexed cue line index to modify")
+    new_text: str = Field(..., description="Replacement text for the cue")
+
+
+class FindReplaceRequest(BaseModel):
+    find: str = Field(..., description="Text or pattern to search for")
+    replace: str = Field(..., description="Replacement text")
+    match_case: bool = Field(False, description="Case-sensitive search if True")
 
 
 # --------------------------------------------------------------------------- Core Routes
@@ -401,7 +468,7 @@ SOURCE_SEARCH_DIRS = [
 
 def looks_like_speedman_output(path: Path) -> bool:
     """True when this is one of our compressed outputs rather than a source."""
-    return bool(_OUTPUT_NAME_RE.match(path.stem)) and is_within(path, OUTPUT_DIR)
+    return bool(_OUTPUT_NAME_RE.match(safe_stem(path))) and is_within(path, OUTPUT_DIR)
 
 
 def find_source_for_output(output_name: str) -> Optional[Path]:
@@ -410,7 +477,7 @@ def find_source_for_output(output_name: str) -> Optional[Path]:
     Best-effort: compression results carry `source_path`, and callers should pass it.
     This exists for the case where only a filename is to hand.
     """
-    match = _OUTPUT_NAME_RE.match(Path(output_name).stem)
+    match = _OUTPUT_NAME_RE.match(safe_stem(output_name))
     if not match:
         return None
     stem = match.group("stem")
@@ -421,6 +488,65 @@ def find_source_for_output(output_name: str) -> Optional[Path]:
             if candidate.is_file() and not looks_like_speedman_output(candidate):
                 return candidate
     return None
+
+
+def find_transcript_for_source(source: Optional[Path], output_name: Optional[str] = None) -> Optional[Path]:
+    """Search for the transcript JSON produced by Media API or present in library.
+
+    Media API saves transcripts at `<audio_path>.with_suffix('.transcript.json')`. For videos,
+    it extracts audio to /mnt/d/Output/Audio/<stem>.mp3 and saves the transcript to
+    /mnt/d/Output/Audio/<stem>.transcript.json, so looking only beside `source` fails when
+    `source` is a video or resides in downloads/video-cache.
+    """
+    candidates: list[Path] = []
+
+    if source is not None:
+        source_p = Path(source)
+        src_stem = safe_stem(source_p)
+        # 1. Beside source
+        candidates.append(source_p.with_suffix(".transcript.json"))
+        candidates.append(source_p.parent / f"{src_stem}.transcript.json")
+        candidates.append(source_p.with_suffix(".json"))
+        candidates.append(source_p.parent / f"{src_stem}.json")
+        # 2. In Media API audio / video output dirs
+        candidates.append(media_api.MEDIA_API_AUDIO_DIR / f"{source_p.stem}.transcript.json")
+        candidates.append(media_api.MEDIA_API_AUDIO_DIR / f"{src_stem}.transcript.json")
+        candidates.append(media_api.MEDIA_API_AUDIO_DIR / f"{source_p.name}.transcript.json")
+        candidates.append(media_api.MEDIA_API_VIDEO_DIR / f"{source_p.stem}.transcript.json")
+        candidates.append(media_api.MEDIA_API_VIDEO_DIR / f"{src_stem}.transcript.json")
+        # 3. In downloads dir
+        candidates.append(media_api.DOWNLOADS_DIR / f"{source_p.stem}.transcript.json")
+        candidates.append(media_api.DOWNLOADS_DIR / f"{src_stem}.transcript.json")
+        # 4. In video-cache dir
+        try:
+            from app import video as video_cache
+            candidates.append(video_cache.VIDEO_CACHE_DIR / f"{source_p.stem}.transcript.json")
+            candidates.append(video_cache.VIDEO_CACHE_DIR / f"{src_stem}.transcript.json")
+        except Exception:
+            pass
+        # 5. In OUTPUT_DIR
+        candidates.append(OUTPUT_DIR / f"{source_p.stem}.transcript.json")
+        candidates.append(OUTPUT_DIR / f"{src_stem}.transcript.json")
+
+    if output_name:
+        out_stem = safe_stem(output_name)
+        match = _OUTPUT_NAME_RE.match(out_stem)
+        base_stem = match.group("stem") if match else out_stem
+        candidates.append(media_api.MEDIA_API_AUDIO_DIR / f"{base_stem}.transcript.json")
+        candidates.append(media_api.MEDIA_API_VIDEO_DIR / f"{base_stem}.transcript.json")
+        candidates.append(media_api.DOWNLOADS_DIR / f"{base_stem}.transcript.json")
+        candidates.append(OUTPUT_DIR / f"{base_stem}.transcript.json")
+        candidates.append(OUTPUT_DIR / f"{out_stem}.transcript.json")
+
+    for cand in candidates:
+        try:
+            cand_res = cand.resolve()
+            if cand_res.is_file() and is_path_allowed(cand_res):
+                return cand_res
+        except Exception:
+            continue
+    return None
+
 
 
 def get_video_media_type(path: Path) -> str:
@@ -438,6 +564,8 @@ def get_audio_media_type(path: Path) -> str:
     # handed back as audio/wav is silently ignored by <track>.
     if ext == ".vtt":
         return "text/vtt"
+    if ext in (".srt", ".txt"):
+        return "text/plain; charset=utf-8"
     if ext == ".json":
         return "application/json"
     if ext == ".mp3":
@@ -467,6 +595,7 @@ def _run_compression(
     uniform: bool,
     format: str = "wav",
     trusted_path: bool = False,
+    auto_obsidian: bool = False,
 ) -> dict[str, Any]:
     """trusted_path=True for server-created temp files. Their location is ours, not the
     caller's, so checking them against ALLOWED_ROOTS can only misfire -- every upload
@@ -496,9 +625,18 @@ def _run_compression(
     # Keep the map so a 1x transcript can be synced to this output later.
     timemap_store.save_quietly(out_name, res.time_map, speed, res.sr)
 
+    try:
+        from speedman.post import compute_waveform_peaks
+        peaks = compute_waveform_peaks(res.audio, num_bins=120)
+        (OUTPUT_DIR / f"{safe_stem(out_name)}.peaks.json").write_text(
+            json.dumps({"peaks": peaks, "filename": out_name}), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to cache waveform peaks: {e}")
+
     elapsed = time.perf_counter() - t_start
 
-    return {
+    result = {
         "status": "success",
         "filename": out_name,
         "output_path": str(out_path),
@@ -524,6 +662,41 @@ def _run_compression(
         "chunked": res.notes.get("chunked", False),
     }
 
+    if auto_obsidian:
+        try:
+            from app import obsidian
+            src_transcript = find_transcript_for_source(src_path, out_name)
+            segments = []
+            if src_transcript and src_transcript.is_file():
+                try:
+                    tdata = json.loads(src_transcript.read_text(encoding="utf-8"))
+                    segments = tdata.get("segments", [])
+                except Exception:
+                    pass
+            summary_data = None
+            if segments:
+                summary_data = obsidian.generate_note_summary(segments, use_llm=True)
+            md_content = obsidian.format_obsidian_markdown(
+                title=stem,
+                source_name=src_path.name,
+                duration_s=in_dur,
+                speed=speed,
+                summary_data=summary_data,
+                segments=segments,
+                include_transcript=bool(segments),
+            )
+            obsidian_note = obsidian.save_obsidian_note(
+                note_title=stem,
+                content=md_content,
+                folder="Summaries",
+            )
+            result["obsidian_note"] = obsidian_note
+            logger.info(f"[compress/obsidian] Saved auto-note to {obsidian_note.get('path')}")
+        except Exception as e:
+            logger.warning(f"[compress/obsidian] Auto-note creation failed: {e}")
+
+    return result
+
 
 @app.post("/api/v1/compress")
 async def compress_audio_multipart(
@@ -533,6 +706,7 @@ async def compress_audio_multipart(
     preset: str = Form("fast"),
     uniform: bool = Form(False),
     format: str = Form("wav"),
+    auto_obsidian: bool = Form(False),
 ):
     jobs.inc_job()
     temp_in = None
@@ -551,7 +725,7 @@ async def compress_audio_multipart(
             raise HTTPException(status_code=400, detail="Must provide either 'file' upload or 'input_path'")
 
         return _run_compression(
-            src_path, stem, speed, preset, uniform, format=format, trusted_path=temp_in is not None
+            src_path, stem, speed, preset, uniform, format=format, trusted_path=temp_in is not None, auto_obsidian=auto_obsidian
         )
     finally:
         if temp_in and temp_in.exists():
@@ -568,7 +742,7 @@ async def compress_audio_json(req: CompressRequest):
     try:
         src_path = normalize_path(req.input_path).resolve()
         stem = src_path.stem
-        return _run_compression(src_path, stem, req.speed, req.preset, req.uniform, format=req.format)
+        return _run_compression(src_path, stem, req.speed, req.preset, req.uniform, format=req.format, auto_obsidian=req.auto_obsidian)
     finally:
         jobs.dec_job()
 
@@ -595,6 +769,7 @@ async def queue_compress_job(req: CompressRequest):
         uniform=req.uniform,
         output_dir=OUTPUT_DIR,
         output_format=fmt,
+        auto_obsidian=req.auto_obsidian,
     )
     return {
         "status": "queued",
@@ -630,6 +805,42 @@ def list_recent_jobs():
     return job_queue.list_jobs(limit=25)
 
 
+@app.get("/api/v1/outputs")
+def list_saved_outputs(limit: int = 50):
+    """Lists saved compressed audio outputs in OUTPUT_DIR and their transcript status."""
+    audio_exts = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac"}
+    items = []
+    try:
+        for p in OUTPUT_DIR.iterdir():
+            if p.is_file() and p.suffix.lower() in audio_exts and not p.name.startswith("."):
+                stat = p.stat()
+                stem = safe_stem(p)
+                synced_json = p.with_name(f"{stem}.synced.json")
+                vtt = p.with_name(f"{stem}.vtt")
+                has_transcript = synced_json.is_file()
+                has_vtt = vtt.is_file()
+
+                speed_match = re.search(r"_(\d+(?:\.\d+)?)x_", stem)
+                speed = float(speed_match.group(1)) if speed_match else None
+
+                items.append({
+                    "filename": p.name,
+                    "stem": stem,
+                    "size_bytes": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "format": p.suffix.lower().lstrip("."),
+                    "speed": speed,
+                    "has_transcript": has_transcript,
+                    "has_vtt": has_vtt,
+                    "audio_url": f"/api/v1/audio/{p.name}",
+                    "transcript_url": f"/api/v1/transcript/{p.name}" if has_transcript else None,
+                })
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+    except Exception as e:
+        logger.warning(f"Error listing saved outputs: {e}")
+    return items[:limit]
+
+
 # --------------------------------------------------------------------------- Media API Integration
 
 @app.get("/api/v1/media/status")
@@ -648,6 +859,48 @@ def media_api_status():
 def media_api_library():
     """Lists audio and video files available in Media API's output directories."""
     return list_media_library(limit=40)
+
+
+@app.post("/api/v1/tools/update-ytdlp")
+async def trigger_ytdlp_update(force: bool = Query(True, description="Force update check even if checked recently")):
+    """Checks and updates yt-dlp on the workstation."""
+    return await asyncio.to_thread(ensure_ytdlp_updated, force=force)
+
+
+@app.post("/api/v1/tools/open-folder")
+def open_workstation_folder(req: OpenFolderRequest):
+    """Opens a workstation media directory in Windows Explorer."""
+    folder_map = {
+        "audio": OUTPUT_DIR,
+        "videos": Path("/mnt/d/Output/Videos"),
+        "source_audio": Path("/mnt/d/Output/Audio"),
+        "video_cache": Path("/mnt/d/Audio/Speed/video-cache"),
+        "1notebook": Path("/mnt/d/OBVLT/1Notebook"),
+        "obsidian": Path("/mnt/d/OBVLT"),
+    }
+    target = folder_map.get(req.folder.lower().strip())
+    if target is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown folder '{req.folder}'. Available: {list(folder_map.keys())}",
+        )
+
+    target.mkdir(parents=True, exist_ok=True)
+    win_path = to_windows_path(target)
+
+    explorer_path = Path("/mnt/c/WINDOWS/explorer.exe")
+    if not explorer_path.exists():
+        explorer_path = Path("/mnt/c/Windows/explorer.exe")
+
+    try:
+        if explorer_path.exists():
+            subprocess.Popen([str(explorer_path), win_path])
+        else:
+            subprocess.Popen(["cmd.exe", "/c", "start", "", win_path])
+        return {"status": "success", "folder": req.folder, "path": win_path}
+    except Exception as e:
+        logger.error(f"[tools] Failed to open folder '{win_path}' in Explorer: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not open folder in Explorer: {e}")
 
 
 @app.post("/api/v1/ingest/url")
@@ -759,28 +1012,130 @@ class SyncTranscriptRequest(BaseModel):
     output_name: str = Field(..., description="Compressed filename to sync against")
     transcript_path: Optional[str] = Field(
         None,
-        description="Media API's transcript JSON. Defaults to the sibling "
-                    "'<source stem>.transcript.json' that Media API writes.",
+        description="Media API's transcript JSON. Defaults to locating it automatically.",
     )
     source_path: Optional[str] = Field(None, description="Source audio, if not derivable")
+    job_id: Optional[str] = Field(None, description="Optional Media API job ID to retrieve output path from")
 
 
 @app.get("/api/v1/transcript/{output_name:path}")
-def get_synced_transcript(output_name: str):
+def get_synced_transcript(
+    output_name: str,
+    format: Optional[str] = Query(None, description="Export format: srt, vtt, txt, or json"),
+    source: bool = Query(False, description="Whether to use 1x source timeline"),
+    timestamps: bool = Query(False, description="For txt format: include timestamps"),
+):
     """The synced transcript for a compressed output, or 404 if it has not been made.
 
     Saves the UI guessing at '<stem>.synced.json' and keeps the naming in one place.
+    Supports ?format=srt|vtt|txt for direct export download.
     """
-    stem = Path(str(output_name).strip("/\\")).stem
+    stem = safe_stem(output_name)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid output filename")
     target = (OUTPUT_DIR / f"{stem}.synced.json").resolve()
     if not target.is_file() or not is_within(target, OUTPUT_DIR):
         raise HTTPException(
             status_code=404,
             detail=f"No synced transcript for '{stem}'. Transcribe the source, then sync.")
     try:
-        return json.loads(target.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
+        segs = data.get("segments", [])
+
+        # Ensure 1x source WebVTT exists on disk for video playback
+        src_vtt = OUTPUT_DIR / f"{stem}.source.vtt"
+        if not src_vtt.is_file() and segs:
+            try:
+                src_vtt.write_text(transcript_sync.to_source_vtt(segs), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[transcript] Could not auto-generate missing source.vtt: {e}")
+
+        vtt = OUTPUT_DIR / f"{stem}.vtt"
+        if not vtt.is_file() and segs:
+            try:
+                vtt.write_text(transcript_sync.to_vtt(segs), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[transcript] Could not auto-generate missing vtt: {e}")
+
+        srt = OUTPUT_DIR / f"{stem}.srt"
+        if not srt.is_file() and segs:
+            try:
+                srt.write_text(transcript_sync.to_srt(segs, use_source=False), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[transcript] Could not auto-generate missing srt: {e}")
+
+        src_srt = OUTPUT_DIR / f"{stem}.source.srt"
+        if not src_srt.is_file() and segs:
+            try:
+                src_srt.write_text(transcript_sync.to_srt(segs, use_source=True), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[transcript] Could not auto-generate missing source.srt: {e}")
+
+        txt = OUTPUT_DIR / f"{stem}.txt"
+        if not txt.is_file() and segs:
+            try:
+                txt.write_text(transcript_sync.to_plain_text(segs, include_timestamps=False), encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[transcript] Could not auto-generate missing txt: {e}")
+
+        # Formatted export download if requested
+        if format:
+            fmt = format.lower().strip()
+            if fmt == "srt":
+                content = transcript_sync.to_srt(segs, use_source=source)
+                filename = f"{stem}{'.source' if source else ''}.srt"
+                return Response(
+                    content=content,
+                    media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            elif fmt == "vtt":
+                content = transcript_sync.to_source_vtt(segs) if source else transcript_sync.to_vtt(segs)
+                filename = f"{stem}{'.source' if source else ''}.vtt"
+                return Response(
+                    content=content,
+                    media_type="text/vtt",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            elif fmt == "txt":
+                content = transcript_sync.to_plain_text(segs, include_timestamps=timestamps, use_source=source)
+                filename = f"{stem}{'.source' if source else ''}.txt"
+                return Response(
+                    content=content,
+                    media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            elif fmt != "json":
+                raise HTTPException(status_code=400, detail=f"Unsupported format '{format}'. Use srt, vtt, txt, or json.")
+
+        data["vtt_url"] = f"/api/v1/audio/{stem}.vtt"
+        data["source_vtt_url"] = f"/api/v1/audio/{stem}.source.vtt"
+        data["srt_url"] = f"/api/v1/audio/{stem}.srt"
+        data["source_srt_url"] = f"/api/v1/audio/{stem}.source.srt"
+        data["txt_url"] = f"/api/v1/audio/{stem}.txt"
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read transcript: {e}")
+
+
+@app.get("/api/v1/transcribe/status/{job_id:path}")
+def get_transcribe_job_status(job_id: str):
+    """Proxies Media API's transcription job status so the UI can report real-time STT progress."""
+    if not job_id or not job_id.strip():
+        raise HTTPException(status_code=400, detail="job_id is required")
+    if not check_media_api_online():
+        raise HTTPException(status_code=503, detail="Media API is currently offline")
+    try:
+        return media_api.get_media_api_job_status(job_id.strip())
+    except RuntimeError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=502, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # MUST stay above /api/v1/transcribe/{filename:path}. FastAPI matches in declaration
@@ -791,12 +1146,27 @@ def sync_transcript_to_output(req: SyncTranscriptRequest):
     """Warp a 1x transcript onto a compressed output's timeline.
 
     Produces <stem>.vtt beside the audio, which players load as a subtitle track, plus
-    <stem>.synced.json with sample-accurate positions. Naive `t / N` drifts 0.08-0.23s
-    because pauses compress harder than speech; the stored map is exact.
+    <stem>.source.vtt for 1x video playback, and <stem>.synced.json with sample-accurate positions.
+    Naive `t / N` drifts 0.08-0.23s because pauses compress harder than speech; the stored map is exact.
     """
-    if req.transcript_path:
+    transcript_json: Optional[Path] = None
+
+    if req.job_id:
+        try:
+            job_status = media_api.get_media_api_job_status(req.job_id)
+            if job_status.get("status") == "completed":
+                cand = job_status.get("output_files", {}).get("transcript_json")
+                if cand:
+                    p = normalize_path(cand).resolve()
+                    if p.is_file() and is_path_allowed(p):
+                        transcript_json = p
+        except Exception as e:
+            logger.debug(f"[sync] Media API job status lookup error: {e}")
+
+    if not transcript_json and req.transcript_path:
         transcript_json = normalize_path(req.transcript_path).resolve()
-    else:
+
+    if not transcript_json:
         source = (normalize_path(req.source_path).resolve() if req.source_path
                   else find_source_for_output(req.output_name))
         if source is None:
@@ -804,7 +1174,9 @@ def sync_transcript_to_output(req: SyncTranscriptRequest):
                 status_code=400,
                 detail="Provide transcript_path or source_path -- the transcript could "
                        "not be located from the output name alone.")
-        transcript_json = source.with_suffix(".transcript.json")
+        transcript_json = find_transcript_for_source(source, req.output_name)
+        if transcript_json is None:
+            transcript_json = source.with_suffix(".transcript.json")
 
     if not is_path_allowed(transcript_json):
         raise HTTPException(status_code=403, detail=f"'{transcript_json}' is outside permitted roots")
@@ -829,9 +1201,497 @@ def sync_transcript_to_output(req: SyncTranscriptRequest):
         "output_duration_s": result.output_duration_s,
         "vtt_path": str(result.vtt_path),
         "windows_vtt_path": to_windows_path(result.vtt_path),
+        "source_vtt_path": str(result.source_vtt_path),
+        "windows_source_vtt_path": to_windows_path(result.source_vtt_path),
+        "srt_path": str(result.srt_path),
+        "windows_srt_path": to_windows_path(result.srt_path),
+        "source_srt_path": str(result.source_srt_path),
+        "windows_source_srt_path": to_windows_path(result.source_srt_path),
+        "txt_path": str(result.txt_path),
+        "windows_txt_path": to_windows_path(result.txt_path),
         "json_path": str(result.json_path),
         "vtt_url": f"/api/v1/audio/{result.vtt_path.name}",
+        "source_vtt_url": f"/api/v1/audio/{result.source_vtt_path.name}",
+        "srt_url": f"/api/v1/audio/{result.srt_path.name}",
+        "source_srt_url": f"/api/v1/audio/{result.source_srt_path.name}",
+        "txt_url": f"/api/v1/audio/{result.txt_path.name}",
     }
+
+
+class ImportTranscriptRequest(BaseModel):
+    output_name: str
+    content: str
+    filename: Optional[str] = None
+
+
+@app.post("/api/v1/transcript/import")
+def import_transcript_for_output(req: ImportTranscriptRequest):
+    """Warps an uploaded/provided subtitle string (VTT, SRT, or JSON) onto the output's timeline."""
+    if not req.output_name:
+        raise HTTPException(status_code=400, detail="output_name is required")
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="Transcript content cannot be empty")
+
+    try:
+        segments = transcript_sync.parse_subtitle_content(req.content, filename_hint=req.filename or "")
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=f"Subtitle parsing error: {e}")
+
+    try:
+        result = transcript_sync.sync_segments_to_output(segments, req.output_name, OUTPUT_DIR)
+    except timemap_store.TimeMapNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "status": "synced",
+        "output": req.output_name,
+        "segments": result.segment_count,
+        "source_duration_s": result.source_duration_s,
+        "output_duration_s": result.output_duration_s,
+        "vtt_path": str(result.vtt_path),
+        "windows_vtt_path": to_windows_path(result.vtt_path),
+        "source_vtt_path": str(result.source_vtt_path),
+        "windows_source_vtt_path": to_windows_path(result.source_vtt_path),
+        "srt_path": str(result.srt_path),
+        "windows_srt_path": to_windows_path(result.srt_path),
+        "source_srt_path": str(result.source_srt_path),
+        "windows_source_srt_path": to_windows_path(result.source_srt_path),
+        "txt_path": str(result.txt_path),
+        "windows_txt_path": to_windows_path(result.txt_path),
+        "json_path": str(result.json_path),
+        "vtt_url": f"/api/v1/audio/{result.vtt_path.name}",
+        "source_vtt_url": f"/api/v1/audio/{result.source_vtt_path.name}",
+        "srt_url": f"/api/v1/audio/{result.srt_path.name}",
+        "source_srt_url": f"/api/v1/audio/{result.source_srt_path.name}",
+        "txt_url": f"/api/v1/audio/{result.txt_path.name}",
+    }
+
+
+@app.post("/api/v1/transcribe/pipeline")
+def transcribe_pipeline(req: TranscribePipelineRequest):
+    """End-to-end headless pipeline: starts transcription, optionally waits for ASR completion,
+    warps the transcript onto the compressed output timeline (.vtt, .srt, .txt, .synced.json),
+    detects semantic chapters, and optionally exports to Obsidian.
+    """
+    stem = safe_stem(req.output_name)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid output filename")
+
+    if req.source_path:
+        source = normalize_path(req.source_path).resolve()
+        if not is_path_allowed(source):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Source path '{source}' is outside permitted workstation roots",
+            )
+    else:
+        source = find_source_for_output(req.output_name)
+        if source is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not determine source audio for '{req.output_name}'. Provide source_path.",
+            )
+
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail=f"Source audio not found: {source}")
+
+    if looks_like_speedman_output(source):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{source.name}' is a Speedman output, not a source. Transcribing compressed audio returns nonsense; pass the original file.",
+        )
+
+    if not check_media_api_online():
+        raise HTTPException(
+            status_code=503,
+            detail="Media API (127.0.0.1:8080) is currently offline. Ensure Media API is running.",
+        )
+
+    try:
+        media_resp = send_to_media_api_transcribe(source, engine=req.engine)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    job_id = media_resp.get("job_id") if isinstance(media_resp, dict) else None
+    if not job_id:
+        raise HTTPException(status_code=502, detail="Media API did not return a valid job_id")
+
+    if not req.wait:
+        return {
+            "status": "forwarded_to_media_api",
+            "job_id": job_id,
+            "output_name": req.output_name,
+            "source_path": str(source),
+            "windows_source_path": to_windows_path(source),
+            "media_api_response": media_resp,
+        }
+
+    # If wait=True, poll until finished or timeout
+    poll_interval = 0.5
+    t_start = time.monotonic()
+    last_status = None
+    transcript_json: Optional[Path] = None
+
+    while time.monotonic() - t_start < req.timeout_s:
+        try:
+            status_info = media_api.get_media_api_job_status(job_id)
+            last_status = status_info.get("status")
+            if last_status == "completed":
+                cand = status_info.get("output_files", {}).get("transcript_json")
+                if cand:
+                    p = normalize_path(cand).resolve()
+                    if p.is_file() and is_path_allowed(p):
+                        transcript_json = p
+                break
+            elif last_status in ("failed", "error"):
+                err_msg = status_info.get("error", "Unknown Media API transcription error")
+                raise HTTPException(status_code=502, detail=f"Media API transcription failed: {err_msg}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.debug(f"[pipeline] Polling Media API job status error: {e}")
+
+        time.sleep(poll_interval)
+
+    if last_status != "completed":
+        raise HTTPException(
+            status_code=504,
+            detail=f"Media API transcription job '{job_id}' timed out after {req.timeout_s}s",
+        )
+
+    # Sync to output
+    if not transcript_json:
+        transcript_json = find_transcript_for_source(source, req.output_name)
+        if transcript_json is None:
+            transcript_json = source.with_suffix(".transcript.json")
+
+    if not transcript_json or not transcript_json.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Transcript file '{transcript_json}' not found after job completed",
+        )
+
+    try:
+        sync_result = transcript_sync.sync_to_output(transcript_json, req.output_name, OUTPUT_DIR)
+    except timemap_store.TimeMapNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    sync_payload = {
+        "status": "synced",
+        "output": req.output_name,
+        "segments": sync_result.segment_count,
+        "source_duration_s": sync_result.source_duration_s,
+        "output_duration_s": sync_result.output_duration_s,
+        "vtt_path": str(sync_result.vtt_path),
+        "windows_vtt_path": to_windows_path(sync_result.vtt_path),
+        "txt_path": str(sync_result.txt_path),
+        "windows_txt_path": to_windows_path(sync_result.txt_path),
+        "json_path": str(sync_result.json_path),
+    }
+
+    # Chapters
+    chapters_payload = None
+    if req.auto_chapters:
+        try:
+            from app import chapters
+            t_data = json.loads(sync_result.json_path.read_text(encoding="utf-8"))
+            segs = t_data.get("segments", [])
+            dur = float(t_data.get("output_duration_s") or sync_result.output_duration_s or 0.0)
+            chaps = chapters.detect_and_save_chapters(
+                output_name=req.output_name,
+                segments=segs,
+                duration_s=dur,
+                output_dir=OUTPUT_DIR,
+                use_llm=req.use_llm,
+            )
+            chapters_payload = {"count": len(chaps), "chapters": chaps}
+        except Exception as e:
+            logger.warning(f"[pipeline] Chapter generation failed: {e}")
+
+    # Obsidian Export
+    obsidian_payload = None
+    if req.auto_obsidian:
+        try:
+            from app import obsidian
+            t_data = json.loads(sync_result.json_path.read_text(encoding="utf-8"))
+            segs = t_data.get("segments", [])
+            dur = float(t_data.get("source_duration_s") or sync_result.source_duration_s or 0.0)
+            speed = float(t_data.get("speed") or 1.0)
+            summary_data = obsidian.generate_note_summary(segs, use_llm=req.use_llm)
+            md_content = obsidian.format_obsidian_markdown(
+                title=stem,
+                source_name=source.name,
+                duration_s=dur,
+                speed=speed,
+                summary_data=summary_data,
+                segments=segs,
+                include_transcript=True,
+            )
+            obsidian_payload = obsidian.save_obsidian_note(
+                note_title=stem,
+                content=md_content,
+                folder=req.obsidian_folder,
+            )
+        except Exception as e:
+            logger.warning(f"[pipeline] Obsidian export failed: {e}")
+
+    return {
+        "status": "success",
+        "job_id": job_id,
+        "output_name": req.output_name,
+        "sync": sync_payload,
+        "chapters": chapters_payload,
+        "obsidian_note": obsidian_payload,
+    }
+
+
+# --------------------------------------------------------------------------- Obsidian Note Export
+
+@app.get("/api/v1/export/obsidian/folders")
+def get_obsidian_folders():
+    from app import obsidian
+    return {"folders": obsidian.get_available_folders(), "default": "Summaries"}
+
+
+@app.post("/api/v1/export/obsidian")
+def export_to_obsidian(req: ObsidianExportRequest):
+    from app import obsidian
+    stem = safe_stem(req.output_name)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid output filename")
+
+    target_synced = (OUTPUT_DIR / f"{stem}.synced.json").resolve()
+    target_src = (OUTPUT_DIR / f"{stem}.transcript.json").resolve()
+    transcript_data = {}
+    if target_synced.is_file() and is_within(target_synced, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_synced.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    elif target_src.is_file() and is_within(target_src, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_src.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    segments = transcript_data.get("segments", [])
+    duration_s = float(transcript_data.get("source_duration_s") or transcript_data.get("duration") or 0.0)
+    speed = float(transcript_data.get("speed") or 1.0)
+    source_name = transcript_data.get("source_path") or stem
+
+    summary_data = None
+    if req.include_summary:
+        summary_data = obsidian.generate_note_summary(segments, use_llm=req.use_llm)
+
+    note_title = req.note_title.strip() if req.note_title else stem
+    formatted_md = obsidian.format_obsidian_markdown(
+        title=note_title,
+        source_name=source_name,
+        duration_s=duration_s,
+        speed=speed,
+        summary_data=summary_data,
+        bookmarks=req.bookmarks if req.include_highlights else [],
+        segments=segments if req.include_transcript else [],
+        custom_tags=req.custom_tags,
+        include_transcript=req.include_transcript,
+    )
+
+    try:
+        return obsidian.save_obsidian_note(
+            note_title=note_title,
+            content=formatted_md,
+            folder=req.folder,
+        )
+    except obsidian.ObsidianExportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[obsidian] Note save failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to write note: {e}")
+
+
+@app.post("/api/v1/export/obsidian/open")
+def open_obsidian_note(req: OpenObsidianNoteRequest):
+    from app import obsidian
+    p = normalize_path(req.path)
+    if not is_within(p, obsidian.NOTEBOOK_ROOT):
+        raise HTTPException(status_code=403, detail="Note path is outside permitted 1Notebook directory")
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=f"Note file not found: {p}")
+
+    win_path = to_windows_path(p)
+    try:
+        subprocess.Popen(["cmd.exe", "/c", "start", "", win_path])
+        return {"status": "success", "opened": win_path}
+    except Exception as e:
+        logger.error(f"[obsidian] Failed to open note in Windows: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not open note: {e}")
+
+
+# --------------------------------------------------------------------------- Chapters & TOC
+
+@app.get("/api/v1/chapters/{output_name}")
+def get_chapters(output_name: str, use_llm: bool = Query(True)):
+    """Fetch chapters for output_name, generating them if not already cached."""
+    from app import chapters
+    stem = safe_stem(output_name)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid output filename")
+
+    cached = chapters.load_cached_chapters(output_name, OUTPUT_DIR)
+    if cached is not None:
+        return {"status": "cached", "stem": stem, "chapters": cached}
+
+    target_synced = (OUTPUT_DIR / f"{stem}.synced.json").resolve()
+    target_src = (OUTPUT_DIR / f"{stem}.transcript.json").resolve()
+    transcript_data = {}
+    if target_synced.is_file() and is_within(target_synced, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_synced.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    elif target_src.is_file() and is_within(target_src, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_src.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    segments = transcript_data.get("segments", [])
+    duration_s = float(transcript_data.get("output_duration_s") or transcript_data.get("duration") or 0.0)
+
+    if not segments:
+        return {"status": "empty", "stem": stem, "chapters": []}
+
+    generated = chapters.detect_and_save_chapters(
+        output_name=output_name,
+        segments=segments,
+        duration_s=duration_s,
+        output_dir=OUTPUT_DIR,
+        use_llm=use_llm,
+    )
+    return {"status": "generated", "stem": stem, "chapters": generated}
+
+
+@app.post("/api/v1/chapters/{output_name}")
+def generate_chapters_route(output_name: str, req: Optional[GenerateChaptersRequest] = None):
+    """Force re-generate or compute chapters for output_name."""
+    from app import chapters
+    req = req or GenerateChaptersRequest()
+    stem = safe_stem(output_name)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid output filename")
+
+    if not req.force_regenerate:
+        cached = chapters.load_cached_chapters(output_name, OUTPUT_DIR)
+        if cached is not None:
+            return {"status": "cached", "stem": stem, "chapters": cached}
+
+    target_synced = (OUTPUT_DIR / f"{stem}.synced.json").resolve()
+    target_src = (OUTPUT_DIR / f"{stem}.transcript.json").resolve()
+    transcript_data = {}
+    if target_synced.is_file() and is_within(target_synced, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_synced.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    elif target_src.is_file() and is_within(target_src, OUTPUT_DIR):
+        try:
+            transcript_data = json.loads(target_src.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    segments = transcript_data.get("segments", [])
+    duration_s = float(transcript_data.get("output_duration_s") or transcript_data.get("duration") or 0.0)
+    if not segments:
+        raise HTTPException(status_code=400, detail=f"No transcript found for '{stem}' to generate chapters")
+
+    generated = chapters.detect_and_save_chapters(
+        output_name=output_name,
+        segments=segments,
+        duration_s=duration_s,
+        output_dir=OUTPUT_DIR,
+        use_llm=req.use_llm,
+    )
+    return {"status": "generated", "stem": stem, "chapters": generated}
+
+
+# --------------------------------------------------------------------------- In-Place Transcript Editing
+
+@app.post("/api/v1/transcript/{output_name}/edit-cue")
+def edit_transcript_cue_route(output_name: str, req: EditCueRequest):
+    """Edit text for a single cue in-place, synchronizing .synced.json, .vtt, .srt, .txt."""
+    try:
+        res = transcript_sync.edit_transcript_cue(
+            output_name=output_name,
+            line_index=req.line_index,
+            new_text=req.new_text,
+            output_dir=OUTPUT_DIR,
+        )
+        return res
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[transcript] Cue edit failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to edit cue: {e}")
+
+
+@app.post("/api/v1/transcript/{output_name}/find-replace")
+def find_replace_transcript_route(output_name: str, req: FindReplaceRequest):
+    """Batch find-and-replace across transcript cues, synchronizing all subtitle files."""
+    try:
+        res = transcript_sync.batch_find_and_replace(
+            output_name=output_name,
+            find_text=req.find,
+            replace_text=req.replace,
+            match_case=req.match_case,
+            output_dir=OUTPUT_DIR,
+        )
+        return res
+    except transcript_sync.TranscriptError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[transcript] Find and replace failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to find and replace: {e}")
+
+
+@app.get("/api/v1/waveform/{filename:path}")
+def get_waveform_peaks(filename: str):
+    """Returns normalized amplitude envelope peaks (120 bins) for waveform scrubbing."""
+    stem = safe_stem(filename)
+    if not stem:
+        raise HTTPException(status_code=400, detail="Invalid audio filename")
+    peaks_file = (OUTPUT_DIR / f"{stem}.peaks.json").resolve()
+    if is_within(peaks_file, OUTPUT_DIR) and peaks_file.is_file():
+        try:
+            return json.loads(peaks_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    try:
+        target_audio = resolve_output_file(filename)
+    except HTTPException:
+        matches = list(OUTPUT_DIR.glob(f"{stem}.*"))
+        audio_matches = [m for m in matches if m.suffix.lower() in (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac")]
+        if audio_matches:
+            target_audio = audio_matches[0]
+        else:
+            raise HTTPException(status_code=404, detail=f"Audio file '{filename}' not found in output directory")
+
+    try:
+        from speedman.post import compute_waveform_peaks
+        y = sio.load(target_audio)
+        peaks = compute_waveform_peaks(y, num_bins=120)
+        payload = {"peaks": peaks, "filename": target_audio.name}
+        try:
+            peaks_file.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            pass
+        return payload
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute waveform peaks: {e}")
 
 
 @app.post("/api/v1/transcribe/{filename:path}")
@@ -877,13 +1737,24 @@ def transcribe_audio_with_media_api(filename: str, req: Optional[TranscribeReque
             ),
         )
 
+    if not check_media_api_online():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Media API (127.0.0.1:8080) is currently offline. Please ensure "
+                "the Media API service is running on the workstation before requesting transcription."
+            ),
+        )
+
     try:
         res = send_to_media_api_transcribe(source, engine=req.engine)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
+    job_id = res.get("job_id") if isinstance(res, dict) else None
     payload = {
         "status": "forwarded_to_media_api",
+        "job_id": job_id,
         "file": source.name,
         "source_path": str(source),
         "windows_source_path": to_windows_path(source),
