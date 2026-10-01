@@ -11,8 +11,9 @@ Set objFso = CreateObject("Scripting.FileSystemObject")
 strWslDistro = "Ubuntu-24.04"
 strUrl = "http://127.0.0.1:8081/"
 
-' 1. Check if keepalive process is already running in WSL; if not, launch hidden sleep infinity
-objShell.Run "wsl.exe -d " & strWslDistro & " -- bash -c ""pgrep -f 'sleep infinity' >/dev/null || exec sleep infinity""", 0, False
+' 1. Keep WSL background session active so Windows does not auto-terminate the VM
+objShell.Run "wsl.exe -d " & strWslDistro & " --exec dbus-launch true", 0, True
+objShell.Run "wsl.exe -d " & strWslDistro & " -- bash -c ""pgrep -x sleep >/dev/null || exec sleep infinity""", 0, False
 
 ' 2. Wait up to 5 seconds for speedman to respond to socket connection
 isAlive = False
