@@ -29,6 +29,73 @@ MEDIA_API_VIDEO_DIR = Path("/mnt/d/Output/Videos")
 DOWNLOADS_DIR = Path("/mnt/d/Audio/Speed/downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+_UPDATE_CHECK_INTERVAL_S = float(os.getenv("SPEEDMAN_YTDLP_UPDATE_INTERVAL", "86400"))  # 24 hours
+_LAST_UPDATE_CHECK_FILE = Path("/mnt/d/Audio/Speed/.ytdlp_last_update_check")
+
+
+def should_check_ytdlp_update() -> bool:
+    """True if yt-dlp has not been checked for updates within the last 24 hours."""
+    if not _LAST_UPDATE_CHECK_FILE.exists():
+        return True
+    try:
+        last_ts = float(_LAST_UPDATE_CHECK_FILE.read_text(encoding="utf-8").strip())
+        return (time.time() - last_ts) >= _UPDATE_CHECK_INTERVAL_S
+    except Exception:
+        return True
+
+
+def record_ytdlp_update_checked() -> None:
+    """Persists timestamp of the last yt-dlp update check."""
+    try:
+        _LAST_UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LAST_UPDATE_CHECK_FILE.write_text(str(time.time()), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[media_api] Failed to record yt-dlp update check timestamp: {e}")
+
+
+def ensure_ytdlp_updated(force: bool = False) -> Dict[str, Any]:
+    """Checks and updates yt-dlp at most once a day when called.
+
+    If Media API is online, delegates to its auto-updating endpoint.
+    If Media API is offline or fails, falls back to updating the local yt-dlp binary.
+    """
+    if not force and not should_check_ytdlp_update():
+        return {"status": "skipped", "message": "Checked recently (within 24h)"}
+
+    logger.info("[media_api] Daily yt-dlp update check triggered...")
+    record_ytdlp_update_checked()
+
+    # 1. Try Media API update endpoint if online
+    if check_media_api_online():
+        try:
+            with httpx.Client(timeout=45.0) as client:
+                resp = client.post(f"{MEDIA_API_BASE}/api/v1/update-ytdlp?force=true")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    logger.info(f"[media_api] Media API updated yt-dlp: {data}")
+                    return data
+        except Exception as e:
+            logger.warning(f"[media_api] Media API update-ytdlp failed ({e}); trying local yt-dlp update")
+
+    # 2. Local fallback update
+    ytdlp_bin = find_ytdlp()
+    if not ytdlp_bin:
+        return {"status": "error", "error": "No yt-dlp binary found to update"}
+
+    try:
+        proc = subprocess.run(
+            [str(ytdlp_bin), "-U"],
+            capture_output=True,
+            text=True,
+            timeout=45.0,
+        )
+        out = (proc.stdout + "\n" + proc.stderr).strip()
+        logger.info(f"[media_api] Local yt-dlp -U completed (code {proc.returncode}): {out}")
+        return {"status": "success", "output": out}
+    except Exception as e:
+        logger.warning(f"[media_api] Local yt-dlp update failed: {e}")
+        return {"status": "error", "error": str(e)}
+
 
 _ONLINE_CACHE_TTL = 10.0
 _online_cache: tuple[float, bool] = (0.0, False)
@@ -111,7 +178,13 @@ DOWNLOAD_TIMEOUT_S = float(os.getenv("SPEEDMAN_DOWNLOAD_TIMEOUT", "1800"))
 def validate_ingest_url(url: str) -> str:
     """Scheme check, shared by the route (fail fast with a 400) and the downloader
     (never trust that the route ran)."""
-    url = str(url or "").strip()
+    url = str(url or "").strip().strip("'\x22<>")
+    if not url:
+        raise ValueError("URL cannot be empty")
+    if url.startswith(("-", "/")):
+        raise ValueError("Invalid URL scheme")
+    if re.match(r"^(?:www\.)?(?:youtube\.com|youtu\.be|m\.youtube\.com)/", url, re.IGNORECASE):
+        url = "https://" + url
     if not _HTTP_URL_RE.match(url):
         raise ValueError("Only http:// and https:// URLs can be ingested")
     return url
@@ -133,6 +206,12 @@ def extract_audio_from_url(url: str, on_progress=None) -> Path:
     # be parsed as an option (--exec, --config-location, ...). The scheme check plus the
     # "--" terminator in the fallback keep caller input out of yt-dlp's option parser.
     url = validate_ingest_url(url)
+
+    # Check once a day and auto-update yt-dlp when called
+    try:
+        ensure_ytdlp_updated(force=False)
+    except Exception as e:
+        logger.warning(f"[media_api] Daily yt-dlp update check failed: {e}")
 
     if check_media_api_online():
         try:
@@ -159,10 +238,21 @@ def _download_via_media_api(url: str, on_progress=None) -> Path:
             raise RuntimeError(f"Media API returned no job_id: {resp.text[:200]}")
 
         deadline = time.monotonic() + DOWNLOAD_TIMEOUT_S
+        status = {}
         while True:
             if time.monotonic() > deadline:
                 raise RuntimeError(f"download timed out after {DOWNLOAD_TIMEOUT_S:.0f}s")
-            status = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}").json()
+            try:
+                poll_resp = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}")
+                if poll_resp.status_code == 200:
+                    status = poll_resp.json()
+                else:
+                    time.sleep(1.5)
+                    continue
+            except Exception:
+                time.sleep(1.5)
+                continue
+
             state = str(status.get("status", "")).lower()
 
             if on_progress:
@@ -195,14 +285,26 @@ def download_video_from_url(url: str, on_progress=None) -> tuple[Path, bool]:
     such a file: it is the user's, not ours.
     """
     url = validate_ingest_url(url)
-    if not check_media_api_online():
-        raise RuntimeError(
-            f"Cannot download video: Media API ({MEDIA_API_BASE}) is unreachable. "
-            "It owns the yt-dlp this workstation uses."
-        )
 
+    # Check once a day and auto-update yt-dlp when called
+    try:
+        ensure_ytdlp_updated(force=False)
+    except Exception as e:
+        logger.warning(f"[media_api] Daily yt-dlp update check failed: {e}")
+
+    if check_media_api_online():
+        try:
+            return _download_video_via_media_api(url, on_progress=on_progress)
+        except Exception as e:
+            logger.warning(f"[media_api] Video download via Media API failed ({e}); trying local yt-dlp")
+
+    return _download_video_via_local_ytdlp(url, on_progress=on_progress)
+
+
+def _download_video_via_media_api(url: str, on_progress=None) -> tuple[Path, bool]:
+    """Download video via Media API."""
     requested_at = time.time()
-    logger.info(f"[media_api] Requesting video download: {url}")
+    logger.info(f"[media_api] Requesting video download via Media API: {url}")
 
     with httpx.Client(timeout=30.0) as client:
         resp = client.post(
@@ -216,10 +318,21 @@ def download_video_from_url(url: str, on_progress=None) -> tuple[Path, bool]:
             raise RuntimeError(f"Media API returned no job_id: {resp.text[:200]}")
 
         deadline = time.monotonic() + DOWNLOAD_TIMEOUT_S
+        status = {}
         while True:
             if time.monotonic() > deadline:
                 raise RuntimeError(f"video download timed out after {DOWNLOAD_TIMEOUT_S:.0f}s")
-            status = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}").json()
+            try:
+                poll_resp = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}")
+                if poll_resp.status_code == 200:
+                    status = poll_resp.json()
+                else:
+                    time.sleep(1.5)
+                    continue
+            except Exception:
+                time.sleep(1.5)
+                continue
+
             state = str(status.get("status", "")).lower()
             if on_progress:
                 on_progress({"stage": "downloading video",
@@ -299,15 +412,21 @@ def _download_via_local_ytdlp(url: str) -> Path:
     if shutil.which("nice"):
         prefix += ["nice", "-n", "10"]
 
+    js_args: List[str] = []
+    if shutil.which("node"):
+        js_args = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+
     cmd = [
         *prefix,
         ytdlp_bin,
+        *js_args,
         "-x",  # Extract audio
         "--audio-format", "wav",
         "--audio-quality", "0",
         "--no-playlist",
         "-o", out_template,
         "--print", "after_move:filepath",
+        "--print", "filepath",
         "--",  # end of options; everything after this is a positional URL
         url,
     ]
@@ -319,10 +438,13 @@ def _download_via_local_ytdlp(url: str) -> Path:
 
     # Find the printed path
     lines = [ln.strip() for ln in proc.stdout.strip().split("\n") if ln.strip()]
-    if lines:
-        downloaded = Path(lines[-1])
-        if downloaded.is_file():
-            return downloaded
+    for ln in reversed(lines):
+        p = Path(ln)
+        if p.is_file():
+            return p
+        wav_p = p.with_suffix(".wav")
+        if wav_p.is_file():
+            return wav_p
 
     # Fallback: scan DOWNLOADS_DIR for newest WAV
     wavs = sorted(DOWNLOADS_DIR.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -330,6 +452,70 @@ def _download_via_local_ytdlp(url: str) -> Path:
         return wavs[0]
 
     raise RuntimeError("Audio was downloaded but target file could not be determined")
+
+
+def _download_video_via_local_ytdlp(url: str, on_progress=None) -> tuple[Path, bool]:
+    """Fallback to download video locally when Media API is unreachable."""
+    ytdlp_bin = find_ytdlp()
+    if not ytdlp_bin:
+        raise RuntimeError(
+            f"Cannot download video: Media API ({MEDIA_API_BASE}) is unreachable and no yt-dlp "
+            "could be found. Start Media API or point SPEEDMAN_YTDLP at a binary."
+        )
+
+    ytdlp_bin = str(ytdlp_bin)
+    logger.info(f"[media_api] Media API is down; downloading video locally with {ytdlp_bin} for {url}")
+
+    from app import video as video_cache
+    video_cache.VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out_template = str(video_cache.VIDEO_CACHE_DIR / "%(title).200B_%(id)s.%(ext)s")
+
+    prefix: List[str] = []
+    if shutil.which("taskset"):
+        prefix += ["taskset", "-c", "8-15"]
+    if shutil.which("nice"):
+        prefix += ["nice", "-n", "10"]
+
+    js_args: List[str] = []
+    if shutil.which("node"):
+        js_args = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
+
+    if on_progress:
+        on_progress({"stage": "downloading video", "progress_pct": 10.0})
+
+    cmd = [
+        *prefix,
+        ytdlp_bin,
+        *js_args,
+        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "--no-playlist",
+        "-o", out_template,
+        "--print", "after_move:filepath",
+        "--print", "filepath",
+        "--",
+        url,
+    ]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(f"yt-dlp video download failed: {err}")
+
+    lines = [ln.strip() for ln in proc.stdout.strip().split("\n") if ln.strip()]
+    for ln in reversed(lines):
+        p = Path(ln)
+        if p.is_file():
+            return p, False
+        mp4_p = p.with_suffix(".mp4")
+        if mp4_p.is_file():
+            return mp4_p, False
+
+    mp4s = sorted(video_cache.VIDEO_CACHE_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if mp4s:
+        return mp4s[0], False
+
+    raise RuntimeError("Video was downloaded but target file could not be determined")
 
 
 def send_to_media_api_transcribe(audio_path: Path, engine: str = "parakeet") -> Dict[str, Any]:
@@ -348,3 +534,19 @@ def send_to_media_api_transcribe(audio_path: Path, engine: str = "parakeet") -> 
             err = resp.json().get("detail", resp.text)
             raise RuntimeError(f"Media API transcription request failed: {err}")
         return resp.json()
+
+
+def get_media_api_job_status(job_id: str) -> Dict[str, Any]:
+    """Queries Media API for the status of a background job (STT transcription, download, etc.)."""
+    if not check_media_api_online():
+        raise RuntimeError("Media API (127.0.0.1:8080) is currently offline")
+
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(f"{MEDIA_API_BASE}/api/v1/status/{job_id}")
+        if resp.status_code == 200:
+            return resp.json()
+        if resp.status_code == 404:
+            raise RuntimeError(f"Job '{job_id}' not found in Media API")
+        err = resp.json().get("detail", resp.text) if resp.headers.get("content-type", "").startswith("application/json") else resp.text
+        raise RuntimeError(f"Media API status query failed: {err}")
+

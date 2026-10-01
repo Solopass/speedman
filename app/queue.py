@@ -21,7 +21,7 @@ from speedman.config import build_config
 from speedman.pipeline import process
 from speedman.chunking import CancelledError
 
-from app.paths import to_windows_path
+from app.paths import to_windows_path, safe_stem
 
 logger = logging.getLogger("speedman_queue")
 
@@ -48,12 +48,14 @@ class SpeedmanJob:
         output_format: str = "wav",
         source_url: Optional[str] = None,
         include_video: bool = False,
+        auto_obsidian: bool = False,
     ):
         if input_path is None and not source_url:
             raise ValueError("a job needs either an input_path or a source_url")
         self.job_id = job_id
         self.include_video = include_video
         self.video_id: Optional[str] = None
+        self.auto_obsidian = auto_obsidian
         # Resolved by the worker when the job starts from a URL: downloading a two-hour
         # podcast inside the HTTP request would hold the connection open for minutes.
         self.source_url = source_url
@@ -100,6 +102,7 @@ class SpeedmanJob:
             "input_filename": self.input_path.name if self.input_path else None,
             "source_url": self.source_url,
             "video_id": self.video_id,
+            "auto_obsidian": self.auto_obsidian,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -128,6 +131,7 @@ class JobManager:
         output_format: str = "wav",
         source_url: Optional[str] = None,
         include_video: bool = False,
+        auto_obsidian: bool = False,
     ) -> SpeedmanJob:
         job_id = f"job_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job = SpeedmanJob(
@@ -140,6 +144,7 @@ class JobManager:
             output_format=output_format,
             source_url=source_url,
             include_video=include_video,
+            auto_obsidian=auto_obsidian,
         )
         with self._lock:
             self.jobs[job_id] = job
@@ -214,7 +219,7 @@ class JobManager:
         target = video_cache.VIDEO_CACHE_DIR / downloaded.name
         if pre_existed:
             _shutil.copy2(str(downloaded), str(target))
-        else:
+        elif downloaded.resolve() != target.resolve():
             _shutil.move(str(downloaded), str(target))
 
         entry = video_cache.register(target, source_url=job.source_url, pre_existed=pre_existed)
@@ -277,7 +282,7 @@ class JobManager:
             if job.is_cancelled():
                 raise CancelledError("Processing cancelled by user")
 
-            stem = job.input_path.stem
+            stem = safe_stem(job.input_path)
             fmt = sio.normalize_output_format(job.output_format)
             out_name = f"{stem}_{job.speed:g}x_{job.preset}{'_uniform' if job.uniform else ''}.{fmt}"
             out_path = job.output_dir / out_name
@@ -288,6 +293,15 @@ class JobManager:
 
             # Keep the map so a 1x transcript can be synced to this output later.
             timemap_store.save_quietly(out_name, res.time_map, job.speed, res.sr)
+
+            try:
+                from speedman.post import compute_waveform_peaks
+                peaks = compute_waveform_peaks(res.audio, num_bins=120)
+                (job.output_dir / f"{safe_stem(out_name)}.peaks.json").write_text(
+                    json.dumps({"peaks": peaks, "filename": out_name}), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cache waveform peaks for {out_name}: {e}")
 
             elapsed = time.perf_counter() - t_start
 
@@ -319,6 +333,47 @@ class JobManager:
                 "chunked": res.notes.get("chunked", False),
                 "video_id": job.video_id,
             }
+
+            if job.auto_obsidian:
+                try:
+                    from app import obsidian
+                    segments = []
+                    cand_transcripts = [
+                        job.input_path.with_suffix(".transcript.json") if job.input_path else None,
+                        job.output_dir / f"{stem}.synced.json",
+                        job.output_dir / f"{stem}.transcript.json",
+                    ]
+                    for cand in cand_transcripts:
+                        if cand and cand.is_file():
+                            try:
+                                tdata = json.loads(cand.read_text(encoding="utf-8"))
+                                segments = tdata.get("segments", [])
+                                if segments:
+                                    break
+                            except Exception:
+                                pass
+                    summary_data = None
+                    if segments:
+                        summary_data = obsidian.generate_note_summary(segments, use_llm=True)
+                    md_content = obsidian.format_obsidian_markdown(
+                        title=stem,
+                        source_name=job.input_path.name if job.input_path else stem,
+                        duration_s=in_dur,
+                        speed=job.speed,
+                        summary_data=summary_data,
+                        segments=segments,
+                        include_transcript=bool(segments),
+                    )
+                    obsidian_note = obsidian.save_obsidian_note(
+                        note_title=stem,
+                        content=md_content,
+                        folder="Summaries",
+                    )
+                    job.result["obsidian_note"] = obsidian_note
+                    logger.info(f"[worker] Job {job.job_id} saved Obsidian note to {obsidian_note.get('path')}")
+                except Exception as e:
+                    logger.warning(f"[queue/obsidian] Auto-note creation failed: {e}")
+
             job.status = "completed"
             job.progress.stage = "completed"
             job.progress.progress_pct = 100.0

@@ -48,3 +48,36 @@ def is_within(target: Path, root: Path) -> bool:
         return resolved == resolved_root or resolved.is_relative_to(resolved_root)
     except Exception:
         return False
+
+
+_KNOWN_EXTENSIONS = (
+    ".synced.json",
+    ".transcript.json",
+    ".vtt",
+    ".npz",
+    ".mp3",
+    ".wav",
+    ".flac",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".aac",
+    ".webm",
+    ".mp4",
+    ".mkv",
+)
+
+
+def safe_stem(path_input: str | Path) -> str:
+    """Extract filename stem without mangling decimal speeds (e.g. 5.5x) or dotted titles (e.g. Dr. Smith)."""
+    raw = _strip_quotes(path_input).rstrip("/\\")
+    name = re.split(r"[/\\]", raw)[-1] if raw else ""
+    if name in (".", ".."):
+        return ""
+    name_lower = name.lower()
+    for ext in _KNOWN_EXTENSIONS:
+        if name_lower.endswith(ext):
+            stem = name[:-len(ext)]
+            return "" if stem in (".", "..") else stem
+    return name
+

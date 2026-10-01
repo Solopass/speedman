@@ -51,6 +51,19 @@ def test_ingest_url_rejects_a_bad_scheme_immediately():
         assert resp.status_code in (400, 422), f"{bad!r} was accepted"
 
 
+def test_validate_ingest_url_normalizes_and_sanitizes():
+    from app.media_api import validate_ingest_url
+
+    assert validate_ingest_url("https://youtu.be/abc") == "https://youtu.be/abc"
+    assert validate_ingest_url("  https://youtu.be/abc  ") == "https://youtu.be/abc"
+    assert validate_ingest_url("<https://www.youtube.com/watch?v=abc>") == "https://www.youtube.com/watch?v=abc"
+    assert validate_ingest_url("'https://youtu.be/abc'") == "https://youtu.be/abc"
+    assert validate_ingest_url("\"https://youtu.be/abc\"") == "https://youtu.be/abc"
+    assert validate_ingest_url("youtu.be/abc") == "https://youtu.be/abc"
+    assert validate_ingest_url("youtube.com/watch?v=abc") == "https://youtube.com/watch?v=abc"
+    assert validate_ingest_url("www.youtube.com/watch?v=abc") == "https://www.youtube.com/watch?v=abc"
+
+
 def test_ingest_url_validates_preset_and_format():
     good = "https://example.com/video"
     assert client.post("/api/v1/ingest/url",
@@ -126,3 +139,65 @@ def test_error_names_the_env_var_when_nothing_is_found(monkeypatch):
     monkeypatch.setattr(m, "check_media_api_online", lambda *a, **k: False)
     with pytest.raises(RuntimeError, match="SPEEDMAN_YTDLP"):
         m.extract_audio_from_url("https://www.youtube.com/watch?v=x")
+
+
+# --------------------------------------------------------------------------- Daily Auto-Update
+
+def test_should_check_ytdlp_update(tmp_path, monkeypatch):
+    import time
+    import app.media_api as m
+
+    fake_ts = tmp_path / ".ytdlp_last_update_check"
+    monkeypatch.setattr(m, "_LAST_UPDATE_CHECK_FILE", fake_ts)
+
+    # 1. No file exists -> should check
+    assert m.should_check_ytdlp_update() is True
+
+    # 2. File written just now -> should not check
+    m.record_ytdlp_update_checked()
+    assert m.should_check_ytdlp_update() is False
+
+    # 3. File written 25 hours ago -> should check
+    old_time = time.time() - (86400 + 3600)
+    fake_ts.write_text(str(old_time), encoding="utf-8")
+    assert m.should_check_ytdlp_update() is True
+
+
+def test_ensure_ytdlp_updated_skips_when_recent(tmp_path, monkeypatch):
+    import app.media_api as m
+
+    fake_ts = tmp_path / ".ytdlp_last_update_check"
+    monkeypatch.setattr(m, "_LAST_UPDATE_CHECK_FILE", fake_ts)
+    m.record_ytdlp_update_checked()
+
+    res = m.ensure_ytdlp_updated(force=False)
+    assert res["status"] == "skipped"
+    assert "within 24h" in res["message"]
+
+
+def test_update_ytdlp_endpoint(monkeypatch):
+    import app.media_api as m
+
+    monkeypatch.setattr(m, "ensure_ytdlp_updated", lambda force=True: {"status": "success", "version": "test"})
+    resp = client.post("/api/v1/tools/update-ytdlp?force=true")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+
+
+def test_download_video_falls_back_locally_when_media_api_offline(tmp_path, monkeypatch):
+    import app.media_api as m
+
+    monkeypatch.setattr(m, "check_media_api_online", lambda *a, **k: False)
+
+    fake_mp4 = tmp_path / "mock_video.mp4"
+    fake_mp4.write_bytes(b"dummy mp4 content")
+
+    def mock_local(url, on_progress=None):
+        return fake_mp4, False
+
+    monkeypatch.setattr(m, "_download_video_via_local_ytdlp", mock_local)
+
+    path, pre_existed = m.download_video_from_url("https://www.youtube.com/watch?v=mock")
+    assert path == fake_mp4
+    assert pre_existed is False
+
