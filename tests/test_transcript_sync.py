@@ -166,8 +166,12 @@ def test_sync_writes_both_files(store, tmp_path):
     result = tsync.sync_to_output(transcript, "talk_5x_fast.mp3", tmp_path)
     assert result.segment_count == 2
     assert result.vtt_path.name == "talk_5x_fast.vtt"
+    assert result.source_vtt_path.name == "talk_5x_fast.source.vtt"
     assert result.json_path.name == "talk_5x_fast.synced.json"
     assert "hello there" in result.vtt_path.read_text(encoding="utf-8")
+    source_vtt_text = result.source_vtt_path.read_text(encoding="utf-8")
+    assert "00:00:00.500 --> 00:00:01.500" in source_vtt_text
+    assert "hello there" in source_vtt_text
 
     data = json.loads(result.json_path.read_text(encoding="utf-8"))
     assert data["warped_with"] == "time_map"
@@ -273,3 +277,61 @@ def test_words_survive_into_the_written_json(store, tmp_path):
     words = data["segments"][0]["words"]
     assert [w["text"] for w in words] == ["one", "two", "three", "four"]
     assert all("source_start" in w for w in words)
+
+
+def test_to_srt_and_to_plain_text_export(store, tmp_path):
+    sr = 24000
+    timemap_store.save("export_5x_fast.mp3",
+                       FakeMap([[0, 0], [5 * sr, sr // 2], [10 * sr, 2 * sr]]),
+                       speed=5.0, sample_rate=sr)
+    src = tmp_path / "export.transcript.json"
+    src.write_text(json.dumps({"segments": [
+        {"start": 1.0, "end": 4.0, "text": "Hello world."},
+        {"start": 7.0, "end": 9.5, "text": "This is Speedman speaking."},
+    ]}), encoding="utf-8")
+
+    result = tsync.sync_to_output(src, "export_5x_fast.mp3", tmp_path)
+    assert result.srt_path.is_file()
+    assert result.source_srt_path.is_file()
+    assert result.txt_path.is_file()
+
+    srt_content = result.srt_path.read_text(encoding="utf-8")
+    assert "-->" in srt_content
+    assert "Hello world." in srt_content
+
+    src_srt_content = result.source_srt_path.read_text(encoding="utf-8")
+    assert "00:00:01,000 --> 00:00:04,000" in src_srt_content
+    assert "Hello world." in src_srt_content
+
+    txt_content = result.txt_path.read_text(encoding="utf-8")
+    assert "Hello world." in txt_content
+    assert "This is Speedman speaking." in txt_content
+
+    # Plain text with timestamps
+    ts_text = tsync.to_plain_text([
+        {"start": 1.0, "end": 4.0, "source_start": 1.0, "text": "Hello"},
+        {"start": 70.0, "end": 75.0, "source_start": 70.0, "text": "World"}
+    ], include_timestamps=True, use_source=True)
+    assert "[00:01] Hello" in ts_text
+    assert "[01:10] World" in ts_text
+
+
+def test_transcript_exports_tolerate_none_and_malformed_values():
+    segments = [
+        {"start": None, "end": None, "source_start": None, "source_end": None, "text": "Nulls"},
+        {"start": "corrupt", "end": float("nan"), "source_start": float("inf"), "source_end": None, "text": "Corrupt"},
+    ]
+    vtt = tsync.to_vtt(segments)
+    assert "Nulls" in vtt and "Corrupt" in vtt
+    src_vtt = tsync.to_source_vtt(segments)
+    assert "Nulls" in src_vtt and "Corrupt" in src_vtt
+    srt_sped = tsync.to_srt(segments, use_source=False)
+    assert "Nulls" in srt_sped and "Corrupt" in srt_sped
+    srt_src = tsync.to_srt(segments, use_source=True)
+    assert "Nulls" in srt_src and "Corrupt" in srt_src
+    txt_ts = tsync.to_plain_text(segments, include_timestamps=True)
+    assert "Nulls" in txt_ts and "Corrupt" in txt_ts
+    txt_prose = tsync.to_plain_text(segments, include_timestamps=False)
+    assert "Nulls" in txt_prose and "Corrupt" in txt_prose
+
+

@@ -21,7 +21,7 @@ from typing import Optional
 
 import numpy as np
 
-from app.paths import is_within
+from app.paths import is_within, safe_stem
 
 logger = logging.getLogger("speedman_timemap")
 
@@ -62,7 +62,10 @@ class StoredTimeMap:
 
 
 def _path_for(output_name: str) -> Path:
-    return TIMEMAP_DIR / f"{Path(str(output_name)).stem}.npz"
+    stem = safe_stem(output_name)
+    if not stem:
+        raise ValueError(f"Invalid output name for timemap: {output_name!r}")
+    return TIMEMAP_DIR / f"{stem}.npz"
 
 
 def save(output_name: str, time_map, speed: float, sample_rate: int) -> Path:
@@ -82,7 +85,10 @@ def save(output_name: str, time_map, speed: float, sample_rate: int) -> Path:
 
 
 def load(output_name: str) -> StoredTimeMap:
-    path = _path_for(output_name)
+    try:
+        path = _path_for(output_name)
+    except ValueError as e:
+        raise TimeMapNotFound(str(e))
     if not path.is_file() or not is_within(path, TIMEMAP_DIR):
         raise TimeMapNotFound(
             f"no time map recorded for '{Path(str(output_name)).name}'. It is written at "
