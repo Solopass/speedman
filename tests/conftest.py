@@ -43,3 +43,17 @@ def tone_silence_tone():
     t = np.arange(n) / SR
     tone = (0.5 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
     return np.concatenate([tone, np.zeros(int(0.6 * SR), dtype=np.float32), tone])
+
+
+@pytest.fixture
+def synthetic_wav(tmp_path):
+    """Creates a 1.0-second synthetic sine wave with a pause in tmp_path."""
+    import soundfile as sf
+    from pathlib import Path
+    wav_path = tmp_path / "test_tone.wav"
+    sr = SR
+    t = np.linspace(0, 1.0, sr, dtype=np.float32)
+    y = np.sin(2 * np.pi * 440 * t)
+    y[int(0.4 * sr):int(0.7 * sr)] = 0.0  # 300ms pause
+    sf.write(str(wav_path), y, sr)
+    return wav_path

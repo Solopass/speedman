@@ -1,6 +1,6 @@
 """speedman command line.
 
-Three commands -- `run`, `compare`, `doctor` -- but `run` is implicit, so
+Commands: `run`, `compare`, `doctor`, `clean` -- but `run` is implicit, so
 `speedman podcast.mp3` works without remembering a subcommand.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ import typer
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Speech-aware time compression that stays intelligible.")
 
-COMMANDS = {"run", "compare", "doctor"}
+COMMANDS = {"run", "compare", "doctor", "clean"}
 
 
 # --------------------------------------------------------------------------- ui
@@ -79,11 +79,14 @@ def run(
     backend: str = typer.Option("rubberband", "--backend", "-b", hidden=True),
     staged: bool = typer.Option(False, "--staged/--no-staged", hidden=True),
     uniform: bool = typer.Option(False, "--uniform", help="Plain constant-rate stretch (what your player does)"),
+    transcribe: bool = typer.Option(False, "--transcribe", "-t", help="Transcribe with Media API (Parakeet ASR) and sync timestamps"),
+    obsidian: bool = typer.Option(False, "--obsidian", help="Export summary and synced transcript to Obsidian 1Notebook"),
     open_folder: bool = typer.Option(False, "--open", help="Open the output folder when finished"),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
     debug: bool = typer.Option(False, "--debug", help="Show the full traceback on error"),
 ):
     """Speed up an audio file while keeping it intelligible."""
+    import json as pyjson
     from . import io as sio
     from .config import PRESETS, build_config
     from .pipeline import process
@@ -105,6 +108,14 @@ def run(
         res = process(y, cfg.sample_rate, cfg, on_progress=prog)
         prog.finish()
         sio.save(out, res.audio, res.sr)
+
+        # Record time map if app package is available so outputs can be transcribed/synced
+        try:
+            from app import timemap_store
+            timemap_store.save_quietly(out.name, res.time_map, speed, res.sr)
+        except Exception:
+            pass
+
     except Exception as exc:
         if debug:
             raise
@@ -119,6 +130,117 @@ def run(
         _ok(f"  wrote {out}")
         if abs(n["duration_error_pct"]) > 1.0:
             _dim(f"  (length is {n['duration_error_pct']:+.1f}% off target)")
+
+    # Optional transcription and Obsidian export pipeline
+    if transcribe or obsidian:
+        try:
+            from app import media_api, transcript as transcript_sync, chapters, obsidian as obs_export
+        except ImportError as e:
+            _err(f"Transcription/Obsidian pipeline requires the speedman app package: {e}")
+            raise typer.Exit(1)
+
+        if not media_api.check_media_api_online():
+            _err("Media API (http://127.0.0.1:8080) is offline. Ensure Media API is running to enable transcription.")
+            raise typer.Exit(1)
+
+        if not quiet:
+            typer.echo("  submitting source audio to Media API (Parakeet ASR) ...")
+        try:
+            media_resp = media_api.send_to_media_api_transcribe(infile, engine="parakeet")
+        except Exception as e:
+            if debug:
+                raise
+            _err(f"Failed to submit transcription job: {e}")
+            raise typer.Exit(1)
+
+        job_id = media_resp.get("job_id") if isinstance(media_resp, dict) else None
+        if not job_id:
+            _err("Media API did not return a valid job ID")
+            raise typer.Exit(1)
+
+        if not quiet:
+            typer.echo(f"  transcribing job {job_id} ", nl=False)
+        transcript_json = None
+        t_start = time.perf_counter()
+        while time.perf_counter() - t_start < 600:
+            time.sleep(1.5)
+            if not quiet:
+                typer.echo(".", nl=False)
+            try:
+                status_info = media_api.get_media_api_job_status(job_id)
+                st = status_info.get("status")
+                if st == "completed":
+                    cand = status_info.get("output_files", {}).get("transcript_json")
+                    if cand:
+                        p = Path(cand)
+                        if p.is_file():
+                            transcript_json = p
+                    break
+                elif st in ("failed", "error"):
+                    err_msg = status_info.get("error", "Unknown error")
+                    _err(f"\n  Transcription failed: {err_msg}")
+                    raise typer.Exit(1)
+            except typer.Exit:
+                raise
+            except Exception:
+                pass
+
+        if not transcript_json:
+            transcript_json = infile.with_suffix(".transcript.json")
+
+        if not transcript_json or not transcript_json.is_file():
+            _err(f"\n  Transcript file not found after job completed: {transcript_json}")
+            raise typer.Exit(1)
+
+        if not quiet:
+            typer.echo(f" done ({time.perf_counter() - t_start:.1f}s)")
+            typer.echo("  warping transcript onto compressed timeline ...")
+
+        sync_res = transcript_sync.sync_to_output(transcript_json, out.name, output_dir=out.parent)
+        if not quiet:
+            _ok(f"  synced: {sync_res.vtt_path.name} ({sync_res.segment_count} segments)")
+            typer.echo("  detecting semantic chapters ...")
+
+        try:
+            t_data = pyjson.loads(sync_res.json_path.read_text(encoding="utf-8"))
+            segs = t_data.get("segments", [])
+            dur_out = float(t_data.get("output_duration_s") or sync_res.output_duration_s or 0.0)
+            chaps = chapters.detect_and_save_chapters(
+                output_name=out.name,
+                segments=segs,
+                duration_s=dur_out,
+                output_dir=out.parent,
+                use_llm=True,
+            )
+            if not quiet:
+                _ok(f"  chapters: {len(chaps)} chapters saved ({out.stem}.chapters.json)")
+        except Exception as e:
+            if not quiet:
+                _dim(f"  (chapter detection notice: {e})")
+
+        if obsidian:
+            if not quiet:
+                typer.echo("  generating Obsidian note summary ...")
+            try:
+                t_data = pyjson.loads(sync_res.json_path.read_text(encoding="utf-8"))
+                segs = t_data.get("segments", [])
+                src_dur = float(t_data.get("source_duration_s") or sync_res.source_duration_s or dur)
+                summary_data = obs_export.generate_note_summary(segs, use_llm=True)
+                md = obs_export.format_obsidian_markdown(
+                    title=out.stem,
+                    source_name=infile.name,
+                    duration_s=src_dur,
+                    speed=speed,
+                    summary_data=summary_data,
+                    segments=segs,
+                    include_transcript=True,
+                )
+                note_info = obs_export.save_obsidian_note(out.stem, md, folder="Summaries")
+                if not quiet:
+                    _ok(f"  obsidian note: {note_info.get('windows_path')}")
+            except Exception as e:
+                _err(f"  Obsidian export notice: {e}")
+
     if open_folder:
         _open_folder(out.parent)
 
@@ -315,6 +437,96 @@ def _self_test() -> tuple[bool, str]:
     if not np.isfinite(res.audio).all():
         return False, "output contained NaN or Inf"
     return True, f"(5x test: length {err:.2f}% off, peak {peak:.2f})"
+
+
+# ------------------------------------------------------------------------ clean
+
+@app.command()
+def clean(
+    days: int = typer.Option(7, "--days", "-d", help="Delete cache/download files older than this many days"),
+    all_files: bool = typer.Option(False, "--all", "-a", help="Delete all files in the cache/downloads directory regardless of age"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show files that would be deleted without deleting them"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Confirm deletion without interactive prompt"),
+):
+    """Clean up old temporary downloads and video cache files to reclaim disk space."""
+    candidates_dirs = [
+        Path("/mnt/d/Audio/Speed/downloads"),
+        Path("D:/Audio/Speed/downloads"),
+        Path("/mnt/d/Audio/Speed/video-cache"),
+        Path("D:/Audio/Speed/video-cache"),
+        Path("/mnt/d/Audio/Speed/comparisons"),
+        Path("D:/Audio/Speed/comparisons"),
+    ]
+    seen_dirs = set()
+    target_dirs = []
+    for d in candidates_dirs:
+        try:
+            r = d.resolve()
+            if r.is_dir() and str(r) not in seen_dirs:
+                seen_dirs.add(str(r))
+                target_dirs.append(r)
+        except Exception:
+            pass
+
+    if not target_dirs:
+        _dim("No cache or downloads directories found.")
+        return
+
+    now = time.time()
+    max_age_s = float(days) * 86400.0
+
+    stale_files = []
+    for t_dir in target_dirs:
+        for f in t_dir.rglob("*"):
+            if f.is_file() and not f.name.startswith("."):
+                try:
+                    mtime = f.stat().st_mtime
+                    size = f.stat().st_size
+                    age_s = now - mtime
+                    if all_files or (age_s >= max_age_s):
+                        stale_files.append((f, size, age_s))
+                except Exception:
+                    pass
+
+    if not stale_files:
+        _ok(f"Clean! No temporary files older than {days} days found.")
+        return
+
+    total_bytes = sum(s for _, s, _ in stale_files)
+    total_mb = total_bytes / (1024 * 1024)
+    total_gb = total_bytes / (1024 * 1024 * 1024)
+    size_str = f"{total_gb:.2f} GB" if total_gb >= 1.0 else f"{total_mb:.1f} MB"
+
+    typer.echo(f"Found {len(stale_files)} files ({size_str}) matching cleanup criteria:\n")
+    for f, size, age_s in sorted(stale_files, key=lambda x: x[0]):
+        age_days = age_s / 86400.0
+        f_mb = size / (1024 * 1024)
+        typer.echo(f"  {f.name:<60} {f_mb:6.1f} MB  ({age_days:4.1f} days old)")
+
+    if dry_run:
+        _dim(f"\n[dry-run] {len(stale_files)} files ({size_str}) would be deleted. None were touched.")
+        return
+
+    if not yes:
+        confirm = typer.confirm(f"\nDelete these {len(stale_files)} files to reclaim {size_str}?", default=False)
+        if not confirm:
+            _dim("Aborted. No files were deleted.")
+            return
+
+    deleted_count = 0
+    reclaimed_bytes = 0
+    for f, size, _ in stale_files:
+        try:
+            f.unlink()
+            deleted_count += 1
+            reclaimed_bytes += size
+        except Exception as e:
+            _err(f"Could not delete {f.name}: {e}")
+
+    rec_mb = reclaimed_bytes / (1024 * 1024)
+    rec_gb = reclaimed_bytes / (1024 * 1024 * 1024)
+    rec_str = f"{rec_gb:.2f} GB" if rec_gb >= 1.0 else f"{rec_mb:.1f} MB"
+    _ok(f"\nCleaned up {deleted_count} files, reclaiming {rec_str}.")
 
 
 # --------------------------------------------------------------------------- main

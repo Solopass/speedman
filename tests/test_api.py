@@ -727,6 +727,8 @@ def test_speed_reader_ui_elements():
     assert 'id="audioDspDrawer"' in html
     assert 'function mins(' in html
     assert 'TOC Chapters' in html
+    assert 'id="videoPipBtn"' in html
+    assert 'toggleVideoPip' in html
 
 
 def test_safe_stem_handles_decimal_speeds_and_dots():

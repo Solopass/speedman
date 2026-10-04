@@ -1756,6 +1756,7 @@
           <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
             <button class="btn-preset" id="videoSubtitleBtn" onclick="toggleVideoSubtitles()" title="Toggle subtitles in video player">💬 Subtitles: On</button>
             <button class="btn-preset" id="videoFullscreenBtn" onclick="toggleVideoFullscreen()" title="Fullscreen with synchronized subtitles (Shift+F)">⛶ Fullscreen</button>
+            <button class="btn-preset" id="videoPipBtn" onclick="toggleVideoPip()" title="Picture-in-Picture floating window (Shift+P)">🗔 Pop Out</button>
             <button class="btn-preset" id="videoSaveBtn" onclick="saveCachedVideo()">💾 Save</button>
             <button class="btn-preset" id="videoCloseBtn" onclick="discardCachedVideo()"
                     title="Delete the video. Audio and transcript are kept.">✕ Close</button>
@@ -2290,6 +2291,7 @@
           <div class="shortcut-row"><kbd>Ctrl+H</kbd> <span>In-Place Find & Replace</span></div>
           <div class="shortcut-row"><kbd>T</kbd> <span>Toggle Chapters / Table of Contents Drawer</span></div>
           <div class="shortcut-row"><kbd>Shift+F</kbd> <span>Video Fullscreen with Subtitles</span></div>
+          <div class="shortcut-row"><kbd>Shift+P</kbd> <span>Video Picture-in-Picture Floating Window</span></div>
           <div class="shortcut-row"><kbd>Z</kbd> <span>Toggle Zen Fullscreen Reader</span></div>
           <div class="shortcut-row"><kbd>Shift+Z</kbd> <span>Toggle Zen Sentence Focus</span></div>
           <div class="shortcut-row"><kbd>J</kbd> / <kbd>K</kbd> <span>Jump to Previous / Next Line</span></div>
@@ -3551,6 +3553,23 @@
         } else if (document.webkitExitFullscreen) {
           document.webkitExitFullscreen();
         }
+      }
+    }
+
+    async function toggleVideoPip() {
+      const vid = document.getElementById('videoPlayer');
+      if (!vid) return;
+      try {
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+        } else if (document.pictureInPictureEnabled && vid.requestPictureInPicture) {
+          await vid.requestPictureInPicture();
+        } else {
+          showToast('⚠️ Picture-in-Picture is not supported in this browser');
+        }
+      } catch (err) {
+        console.warn('PiP error:', err);
+        showToast('⚠️ PiP error: ' + (err.message || err));
       }
     }
 
@@ -6118,6 +6137,13 @@
 
       if (e.code === 'KeyP') {
         e.preventDefault();
+        if (e.shiftKey) {
+          const vCard = document.getElementById('videoCard');
+          if (vCard && vCard.style.display !== 'none') {
+            toggleVideoPip();
+            return;
+          }
+        }
         updateReaderSetting('rsvpGhosts', !readerSettings.rsvpGhosts);
         return;
       }
