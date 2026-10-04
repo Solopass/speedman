@@ -3399,6 +3399,9 @@
         const transcriptBadge = it.has_transcript
           ? '<span class="badge-transcript">📝 Synced Transcript</span>'
           : '<span class="badge-audio-only">🔊 Audio Only</span>';
+        const chapterBadge = it.has_chapters
+          ? '<span class="badge-transcript" style="background:rgba(210,153,34,0.15); color:var(--warning); border-color:var(--warning);">📑 TOC Chapters</span>'
+          : '';
 
         const infoCol = document.createElement('div');
         infoCol.className = 'saved-info-col';
@@ -3414,6 +3417,7 @@
           <span>${it.format.toUpperCase()}</span>
           <span>${dateStr}</span>
           ${transcriptBadge}
+          ${chapterBadge}
         `;
         infoCol.appendChild(titleDiv);
         infoCol.appendChild(metaDiv);

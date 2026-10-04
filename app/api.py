@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -276,7 +277,7 @@ async def track_activity(request: Request, call_next):
 class CompressRequest(BaseModel):
     input_path: str = Field(..., description="Local path to audio file on workstation (Windows or WSL format)")
     speed: float = Field(5.0, ge=1.01, le=30.0, description="Speed multiplier (e.g. 5.0 for 5x)")
-    preset: str = Field("fast", description="Preset: natural | fast | aggressive | max")
+    preset: str = Field("fast", description="Preset: natural | fast | audiophile | aggressive | max")
     uniform: bool = Field(False, description="Uniform constant-rate stretch (control mode)")
     format: str = Field("wav", description="Audio output format: wav | mp3 | m4a | flac")
     output_filename: Optional[str] = None
@@ -817,8 +818,10 @@ def list_saved_outputs(limit: int = 50):
                 stem = safe_stem(p)
                 synced_json = p.with_name(f"{stem}.synced.json")
                 vtt = p.with_name(f"{stem}.vtt")
+                chapters_json = p.with_name(f"{stem}.chapters.json")
                 has_transcript = synced_json.is_file()
                 has_vtt = vtt.is_file()
+                has_chapters = chapters_json.is_file()
 
                 speed_match = re.search(r"_(\d+(?:\.\d+)?)x_", stem)
                 speed = float(speed_match.group(1)) if speed_match else None
@@ -832,6 +835,7 @@ def list_saved_outputs(limit: int = 50):
                     "speed": speed,
                     "has_transcript": has_transcript,
                     "has_vtt": has_vtt,
+                    "has_chapters": has_chapters,
                     "audio_url": f"/api/v1/audio/{p.name}",
                     "transcript_url": f"/api/v1/transcript/{p.name}" if has_transcript else None,
                 })
@@ -1524,8 +1528,16 @@ def open_obsidian_note(req: OpenObsidianNoteRequest):
 
     win_path = to_windows_path(p)
     try:
-        subprocess.Popen(["cmd.exe", "/c", "start", "", win_path])
-        return {"status": "success", "opened": win_path}
+        # Prefer direct obsidian:// URI so Windows opens directly in Obsidian app
+        try:
+            rel = p.resolve().relative_to(obsidian.VAULT_ROOT.resolve())
+            rel_str = str(rel.with_suffix("")).replace("\\", "/")
+            obsidian_uri = f"obsidian://open?vault={obsidian.VAULT_NAME}&file={urllib.parse.quote(rel_str, safe='')}"
+            subprocess.Popen(["cmd.exe", "/c", "start", "", obsidian_uri])
+            return {"status": "success", "opened": win_path, "obsidian_uri": obsidian_uri}
+        except Exception:
+            subprocess.Popen(["cmd.exe", "/c", "start", "", win_path])
+            return {"status": "success", "opened": win_path}
     except Exception as e:
         logger.error(f"[obsidian] Failed to open note in Windows: {e}")
         raise HTTPException(status_code=500, detail=f"Could not open note: {e}")

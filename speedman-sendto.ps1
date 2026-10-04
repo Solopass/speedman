@@ -20,12 +20,21 @@ if ($Obsidian) {
 Write-Host ""
 
 try {
-    try {
-        $null = Invoke-RestMethod -Uri "http://127.0.0.1:8081/health" -Method Get -TimeoutSec 2
-    } catch {
-        Write-Host "Waking Speedman socket..." -ForegroundColor Yellow
-        Start-Process wsl.exe -ArgumentList "-d Ubuntu-24.04 --exec dbus-launch true" -WindowStyle Hidden -Wait
-        Start-Sleep -Seconds 1
+    $ready = $false
+    for ($i = 0; $i -lt 8; $i++) {
+        try {
+            $h = Invoke-RestMethod -Uri "http://127.0.0.1:8081/health" -Method Get -TimeoutSec 3
+            if ($h.status -eq "ok") {
+                $ready = $true
+                break
+            }
+        } catch {
+            if ($i -eq 0) {
+                Write-Host "Waking Speedman socket..." -ForegroundColor Yellow
+                Start-Process wsl.exe -ArgumentList "-d Ubuntu-24.04 --exec dbus-launch true" -WindowStyle Hidden -Wait
+            }
+            Start-Sleep -Milliseconds 1000
+        }
     }
 
     Write-Host "Sending compression request to Speedman (127.0.0.1:8081)..." -ForegroundColor Cyan

@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app import timemap_store
 from app.paths import is_within, safe_stem
@@ -121,10 +121,34 @@ def generate_algorithmic_chapters(
     return chapters
 
 
+def _parse_json_response(content: str) -> Optional[Dict[str, Any]]:
+    """Parse JSON from LLM response, stripping markdown fences or embedded wrappers."""
+    raw = content.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+        raw = raw.strip()
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    m = re.search(r"(\{.*\})", raw, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return None
+
+
 def query_llm_chapters(
     segments: List[Dict[str, Any]],
     duration_s: float,
-    timeout_s: float = 12.0,
+    timeout_s: float = 25.0,
 ) -> Optional[List[Dict[str, Any]]]:
     """Attempts local AI chapter detection via sol-fast on :11440."""
     if not segments or duration_s < 60.0:
@@ -173,26 +197,27 @@ def query_llm_chapters(
             if resp.status == 200:
                 res_data = json.loads(resp.read().decode("utf-8"))
                 content = res_data["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                ch_list = parsed.get("chapters", [])
-                if isinstance(ch_list, list) and len(ch_list) >= 2:
-                    clean_chapters = []
-                    for idx, c in enumerate(ch_list):
-                        start = max(0.0, float(c.get("start", 0.0)))
-                        end = min(duration_s, float(c.get("end", duration_s)))
-                        if end <= start:
-                            end = start + 30.0
-                        clean_chapters.append({
-                            "id": idx + 1,
-                            "title": str(c.get("title", f"Chapter {idx + 1}")).strip(),
-                            "start": round(start, 2),
-                            "end": round(end, 2),
-                            "summary": str(c.get("summary", "")).strip(),
-                        })
-                    # Ensure first starts at 0 and last ends at duration_s
-                    clean_chapters[0]["start"] = 0.0
-                    clean_chapters[-1]["end"] = round(duration_s, 2)
-                    return clean_chapters
+                parsed = _parse_json_response(content)
+                if parsed:
+                    ch_list = parsed.get("chapters", [])
+                    if isinstance(ch_list, list) and len(ch_list) >= 2:
+                        clean_chapters = []
+                        for idx, c in enumerate(ch_list):
+                            start = max(0.0, float(c.get("start", 0.0)))
+                            end = min(duration_s, float(c.get("end", duration_s)))
+                            if end <= start:
+                                end = start + 30.0
+                            clean_chapters.append({
+                                "id": idx + 1,
+                                "title": str(c.get("title", f"Chapter {idx + 1}")).strip(),
+                                "start": round(start, 2),
+                                "end": round(end, 2),
+                                "summary": str(c.get("summary", "")).strip(),
+                            })
+                        # Ensure first starts at 0 and last ends at duration_s
+                        clean_chapters[0]["start"] = 0.0
+                        clean_chapters[-1]["end"] = round(duration_s, 2)
+                        return clean_chapters
     except Exception as e:
         logger.info(f"Local AI chaptering unavailable ({e}); falling back to algorithmic detection.")
 

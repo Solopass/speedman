@@ -75,7 +75,7 @@ def run(
     infile: Path = typer.Argument(..., exists=True, dir_okay=False, help="Audio file to speed up"),
     out: Optional[Path] = typer.Option(None, "-o", "--out", help="Output file (default: alongside the input)"),
     speed: float = typer.Option(5.0, "--speed", "-s", min=1.01, max=30.0, help="How much faster"),
-    preset: str = typer.Option("fast", "--preset", "-p", help="natural | fast | aggressive | max"),
+    preset: str = typer.Option("fast", "--preset", "-p", help="natural | fast | audiophile | aggressive | max"),
     backend: str = typer.Option("rubberband", "--backend", "-b", hidden=True),
     staged: bool = typer.Option(False, "--staged/--no-staged", hidden=True),
     uniform: bool = typer.Option(False, "--uniform", help="Plain constant-rate stretch (what your player does)"),
@@ -162,10 +162,13 @@ def compare(
     out_dir = out_dir or infile.with_name(f"{infile.stem}_compare")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    variants = [("uniform", dict(uniform=True)),
-                ("natural", dict(preset="natural")),
-                ("fast", dict(preset="fast")),
-                ("aggressive", dict(preset="aggressive"))]
+    variants = [
+        ("uniform", dict(uniform=True)),
+        ("natural", dict(preset="natural")),
+        ("fast", dict(preset="fast")),
+        ("audiophile", dict(preset="audiophile")),
+        ("aggressive", dict(preset="aggressive")),
+    ]
 
     y = sio.load(infile, 24000)
     dur = len(y) / 24000

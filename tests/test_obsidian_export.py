@@ -48,7 +48,7 @@ def test_note_summary_fallback_when_llm_fails(monkeypatch):
 
 
 def test_note_summary_uses_llm_when_available(monkeypatch):
-    def fake_llm(text, timeout_s=12.0):
+    def fake_llm(text, timeout_s=25.0):
         return ("LLM Executive Summary: Advanced speech compression.", ["Takeaway 1: Fast", "Takeaway 2: Clear"])
 
     monkeypatch.setattr(obsidian, "query_local_llm_summary", fake_llm)
@@ -57,6 +57,54 @@ def test_note_summary_uses_llm_when_available(monkeypatch):
     assert "sol-fast" in res["engine"]
     assert "LLM Executive Summary" in res["summary"]
     assert len(res["takeaways"]) == 2
+
+
+def test_parse_json_response_markdown_fences():
+    from app.obsidian import _parse_json_response
+
+    # Clean JSON
+    res1 = _parse_json_response('{"summary": "Test", "takeaways": ["Point 1"]}')
+    assert res1 == {"summary": "Test", "takeaways": ["Point 1"]}
+
+    # Markdown fence with ```json
+    res2 = _parse_json_response('```json\n{"summary": "Fenced", "takeaways": ["Point 2"]}\n```')
+    assert res2 == {"summary": "Fenced", "takeaways": ["Point 2"]}
+
+    # Markdown fence without language tag
+    res3 = _parse_json_response('```\n{"summary": "Plain fence", "takeaways": ["Point 3"]}\n```')
+    assert res3 == {"summary": "Plain fence", "takeaways": ["Point 3"]}
+
+    # Pre-amble thought text before JSON
+    res4 = _parse_json_response('Here is your structured summary:\n{"summary": "With thought", "takeaways": ["Point 4"]}\nHope this helps!')
+    assert res4 == {"summary": "With thought", "takeaways": ["Point 4"]}
+
+    # Invalid string
+    assert _parse_json_response('Not valid json at all') is None
+
+
+def test_query_local_llm_summary_handles_markdown_fenced_response(monkeypatch):
+    from unittest.mock import MagicMock
+    import io
+
+    fenced_payload = {
+        "choices": [{
+            "message": {
+                "content": "```json\n{\"summary\": \"Robust summary parsed from fence.\", \"takeaways\": [\"A\", \"B\"]}\n```"
+            }
+        }]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps(fenced_payload).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = False
+
+    monkeypatch.setattr(obsidian.urllib.request, "urlopen", lambda req, timeout: mock_resp)
+
+    summary, takeaways = obsidian.query_local_llm_summary("Long transcript content for testing local AI fence handling...", timeout_s=5.0)
+    assert summary == "Robust summary parsed from fence."
+    assert takeaways == ["A", "B"]
 
 
 def test_format_obsidian_markdown():

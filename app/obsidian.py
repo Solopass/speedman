@@ -140,7 +140,31 @@ def generate_extractive_summary(text: str, max_sentences: int = 3, max_takeaways
     return exec_summary, takeaways
 
 
-def query_local_llm_summary(text: str, timeout_s: float = 12.0) -> Optional[Tuple[str, List[str]]]:
+def _parse_json_response(content: str) -> Optional[Dict[str, Any]]:
+    """Parse JSON from LLM response, stripping markdown fences or embedded wrappers."""
+    raw = content.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+        raw = raw.strip()
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    m = re.search(r"(\{.*\})", raw, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return None
+
+
+def query_local_llm_summary(text: str, timeout_s: float = 25.0) -> Optional[Tuple[str, List[str]]]:
     """Attempt synthesis via SOL local AI router (sol-fast / Gemma 4 on :11440).
 
     Returns (executive_summary, list_of_takeaways) on success, or None on error/timeout.
@@ -182,12 +206,13 @@ def query_local_llm_summary(text: str, timeout_s: float = 12.0) -> Optional[Tupl
             if resp.status == 200:
                 result = json.loads(resp.read().decode("utf-8"))
                 content = result["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                summary = str(parsed.get("summary", "")).strip()
-                takeaways = parsed.get("takeaways", [])
-                if isinstance(takeaways, list) and summary:
-                    clean_takeaways = [str(t).strip() for t in takeaways if str(t).strip()]
-                    return summary, clean_takeaways
+                parsed = _parse_json_response(content)
+                if parsed:
+                    summary = str(parsed.get("summary", "")).strip()
+                    takeaways = parsed.get("takeaways", [])
+                    if isinstance(takeaways, list) and summary:
+                        clean_takeaways = [str(t).strip() for t in takeaways if str(t).strip()]
+                        return summary, clean_takeaways
     except Exception as e:
         logger.info(f"Local LLM summarization unavailable or skipped ({e}); utilizing smart extractive summary.")
 

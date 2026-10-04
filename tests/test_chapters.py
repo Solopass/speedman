@@ -92,6 +92,45 @@ def test_query_llm_chapters_fallback_on_error(monkeypatch):
     assert res is None
 
 
+def test_chapters_parse_json_response():
+    from app.chapters import _parse_json_response
+
+    res = _parse_json_response('```json\n{"chapters": [{"title": "Intro", "start": 0.0, "end": 30.0}]}\n```')
+    assert res is not None
+    assert "chapters" in res
+    assert res["chapters"][0]["title"] == "Intro"
+
+
+def test_query_llm_chapters_handles_markdown_fence(monkeypatch):
+    from unittest.mock import MagicMock
+
+    fenced_payload = {
+        "choices": [{
+            "message": {
+                "content": "```json\n{\"chapters\": [{\"title\": \"Intro Section\", \"start\": 0.0, \"end\": 40.0}, {\"title\": \"Outro Section\", \"start\": 40.0, \"end\": 80.0}]}\n```"
+            }
+        }]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps(fenced_payload).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = False
+
+    monkeypatch.setattr(chapters.urllib.request, "urlopen", lambda req, timeout: mock_resp)
+
+    segs = [
+        {"start": 0.0, "end": 40.0, "text": "Introduction part."},
+        {"start": 40.0, "end": 80.0, "text": "Conclusion part."},
+    ]
+    res = chapters.query_llm_chapters(segs, duration_s=80.0, timeout_s=5.0)
+    assert res is not None
+    assert len(res) == 2
+    assert res[0]["title"] == "Intro Section"
+    assert res[1]["title"] == "Outro Section"
+
+
 def test_chapters_api_endpoints(tmp_path, monkeypatch):
     stem = "api_chapter_test_output"
     audio_file = OUTPUT_DIR / f"{stem}.wav"

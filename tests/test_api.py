@@ -648,6 +648,9 @@ def test_list_saved_outputs(tmp_path, monkeypatch):
     f2 = tmp_path / "talk_3.5x_fast.wav"
     f2.write_bytes(b"fake wav data")
 
+    f1_ch = tmp_path / "podcast_5x_fast.chapters.json"
+    f1_ch.write_text('{"chapters": []}', encoding="utf-8")
+
     resp = client.get("/api/v1/outputs")
     assert resp.status_code == 200
     data = resp.json()
@@ -655,10 +658,36 @@ def test_list_saved_outputs(tmp_path, monkeypatch):
     names = {item["filename"]: item for item in data}
     assert "podcast_5x_fast.mp3" in names
     assert names["podcast_5x_fast.mp3"]["has_transcript"] is True
+    assert names["podcast_5x_fast.mp3"]["has_chapters"] is True
     assert names["podcast_5x_fast.mp3"]["speed"] == 5.0
     assert "talk_3.5x_fast.wav" in names
     assert names["talk_3.5x_fast.wav"]["has_transcript"] is False
+    assert names["talk_3.5x_fast.wav"]["has_chapters"] is False
     assert names["talk_3.5x_fast.wav"]["speed"] == 3.5
+
+
+def test_open_obsidian_note_uri(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    import subprocess
+    from app import obsidian
+
+    mock_popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", mock_popen)
+    monkeypatch.setattr(obsidian, "NOTEBOOK_ROOT", tmp_path / "1Notebook")
+    monkeypatch.setattr(obsidian, "VAULT_ROOT", tmp_path)
+
+    note_dir = tmp_path / "1Notebook" / "Summaries"
+    note_dir.mkdir(parents=True, exist_ok=True)
+    note_file = note_dir / "Test_Note.md"
+    note_file.write_text("# Test Note\nContent", encoding="utf-8")
+
+    resp = client.post("/api/v1/export/obsidian/open", json={"path": str(note_file)})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "obsidian_uri" in data
+    assert "obsidian://open?vault=OBVLT" in data["obsidian_uri"]
+    mock_popen.assert_called_once()
 
 
 def test_speed_reader_ui_elements():
