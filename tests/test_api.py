@@ -722,6 +722,12 @@ def test_speed_reader_ui_elements():
     assert 'id="savedLibraryList"' in html
     assert 'openSavedOutputsModal' in html
 
+    # Check Drawers and global formatting helpers
+    assert 'id="chaptersDrawer"' in html
+    assert 'id="audioDspDrawer"' in html
+    assert 'function mins(' in html
+    assert 'TOC Chapters' in html
+
 
 def test_safe_stem_handles_decimal_speeds_and_dots():
     from app.paths import safe_stem

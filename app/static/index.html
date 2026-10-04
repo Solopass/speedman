@@ -2288,6 +2288,7 @@
           <div class="shortcut-row"><kbd>P</kbd> <span>Toggle RSVP Peripheral Ghosts</span></div>
           <div class="shortcut-row"><kbd>M</kbd> <span>Mark last 5s as Important (<span id="scBookmarkCount">0</span>)</span></div>
           <div class="shortcut-row"><kbd>Ctrl+H</kbd> <span>In-Place Find & Replace</span></div>
+          <div class="shortcut-row"><kbd>T</kbd> <span>Toggle Chapters / Table of Contents Drawer</span></div>
           <div class="shortcut-row"><kbd>Shift+F</kbd> <span>Video Fullscreen with Subtitles</span></div>
           <div class="shortcut-row"><kbd>Z</kbd> <span>Toggle Zen Fullscreen Reader</span></div>
           <div class="shortcut-row"><kbd>Shift+Z</kbd> <span>Toggle Zen Sentence Focus</span></div>
@@ -2743,9 +2744,14 @@
     }
 
     function fmtTime(sec) {
-      const m = Math.floor(sec / 60);
-      const s = Math.floor(sec % 60);
+      const sNum = Math.max(0, Number(sec) || 0);
+      const m = Math.floor(sNum / 60);
+      const s = Math.floor(sNum % 60);
       return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    function mins(sec) {
+      return fmtTime(sec);
     }
 
     // Process single audio via Job Queue or URL Ingestion
@@ -6031,8 +6037,20 @@
         closeBookmarksModal();
         closeObsidianExportModal();
         closeFindReplaceModal();
+        const chDr = document.getElementById('chaptersDrawer');
+        if (chDr && chDr.style.display !== 'none') { toggleChaptersDrawer(); return; }
+        const dspDr = document.getElementById('audioDspDrawer');
+        if (dspDr && dspDr.style.display !== 'none') { toggleAudioDspDrawer(); return; }
+        const rsDr = document.getElementById('readerSettingsDrawer');
+        if (rsDr && rsDr.style.display !== 'none') { toggleReaderSettingsDrawer(); return; }
         if (zenSentenceActive) { toggleZenSentenceMode(); return; }
         if (document.body.classList.contains('zen-active')) toggleZenMode();
+        return;
+      }
+
+      if (e.code === 'KeyT') {
+        e.preventDefault();
+        toggleChaptersDrawer();
         return;
       }
 
