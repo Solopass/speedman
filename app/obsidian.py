@@ -270,6 +270,9 @@ def format_obsidian_markdown(
     custom_tags: Optional[List[str]] = None,
     include_transcript: bool = True,
     transcript_collapsed: bool = True,
+    embed_audio: bool = False,
+    audio_filename: Optional[str] = None,
+    deep_link_timestamps: bool = False,
 ) -> str:
     """Format comprehensive Obsidian note markdown."""
     now = datetime.now()
@@ -306,6 +309,12 @@ def format_obsidian_markdown(
     lines.append(f"# 🎧 {title}")
     lines.append("")
 
+    # Audio Player Embed
+    if embed_audio:
+        embed_target = audio_filename or source_name
+        lines.append(f"![[{embed_target}]]")
+        lines.append("")
+
     # Summary section
     if summary_data and summary_data.get("summary"):
         lines.append("> [!abstract] Executive Summary")
@@ -321,6 +330,21 @@ def format_obsidian_markdown(
                 lines.append(f"> - {t}")
             lines.append("")
 
+    # Helper for deep linking timestamps
+    def _format_cite(ts_start: float, ts_end: float) -> str:
+        label = f"{format_secs(ts_start)} - {format_secs(ts_end)}"
+        if deep_link_timestamps:
+            encoded_title = urllib.parse.quote(title)
+            return f"[{label}](obsidian://open?vault={VAULT_NAME}&file={encoded_title}#t={int(ts_start)})"
+        return f"[{label}]"
+
+    def _format_point(ts: float) -> str:
+        label = format_secs(ts)
+        if deep_link_timestamps:
+            encoded_title = urllib.parse.quote(title)
+            return f"[{label}](obsidian://open?vault={VAULT_NAME}&file={encoded_title}#t={int(ts)})"
+        return f"[{label}]"
+
     # Highlights & Quotes section
     bms = bookmarks or []
     if bms:
@@ -333,7 +357,7 @@ def format_obsidian_markdown(
             note = str(bm.get("note", "")).strip()
 
             lines.append(f'> "{quote}"')
-            cite = f"— **[{format_secs(t_start)} - {format_secs(t_end)}]**"
+            cite = f"— **{_format_cite(t_start, t_end)}**"
             if note:
                 cite += f" *({note})*"
             lines.append(f"> {cite}")
@@ -353,7 +377,7 @@ def format_obsidian_markdown(
             t = float(s.get("source_start", s.get("start", 0.0)))
             txt = str(s.get("text", "")).strip()
             if txt:
-                lines.append(f"- **[{format_secs(t)}]** {txt}")
+                lines.append(f"- **{_format_point(t)}** {txt}")
 
         if transcript_collapsed:
             lines.append("")
@@ -363,6 +387,79 @@ def format_obsidian_markdown(
     lines.append("---")
     lines.append(f"*Exported from Speedman on {date_str}*")
     return "\n".join(lines) + "\n"
+
+
+def append_quotes_to_daily_note(
+    quotes: List[Dict[str, Any]],
+    source_title: str,
+    folder: str = "Digests",
+    date_str: Optional[str] = None,
+    notebook_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Append highlighted quotes to a daily digest note in 1Notebook/<folder>/<YYYY-MM-DD>.md."""
+    if not quotes:
+        raise ObsidianExportError("No quotes provided to append")
+
+    now = datetime.now()
+    day = date_str or now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M")
+
+    base_root = notebook_root if notebook_root else NOTEBOOK_ROOT
+    folder_str = str(folder).strip() or "Digests"
+    target_dir = (base_root / folder_str).resolve()
+    if not is_within(target_dir, base_root):
+        raise ObsidianExportError("Target folder is outside permitted 1Notebook directory")
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    note_path = (target_dir / f"{day}.md").resolve()
+    if not is_within(note_path, base_root):
+        raise ObsidianExportError("Target note path is outside permitted 1Notebook directory")
+
+    lines = []
+    # If file doesn't exist, create initial frontmatter
+    if not note_path.is_file():
+        lines.append("---")
+        lines.append("made_by: speedman")
+        lines.append(f"date: '{day}'")
+        lines.append("tags:")
+        lines.append("  - speedman")
+        lines.append("  - audio-digests")
+        lines.append("---")
+        lines.append("")
+        lines.append(f"# 📅 Audio Highlights & Daily Digest - {day}")
+        lines.append("")
+
+    lines.append(f"### 🎙️ {source_title} ({time_str})")
+    lines.append("")
+    for bm in quotes:
+        t_start = bm.get("startTime", max(0.0, bm.get("time", 0.0) - 5.0))
+        t_end = bm.get("endTime", bm.get("time", t_start + 5.0))
+        quote = str(bm.get("text", "")).strip()
+        note = str(bm.get("note", "")).strip()
+        lines.append(f'> "{quote}"')
+        cite = f"— **[{format_secs(t_start)} - {format_secs(t_end)}]**"
+        if note:
+            cite += f" *({note})*"
+        lines.append(f"> {cite}")
+        lines.append("")
+
+    content_to_append = "\n".join(lines) + "\n"
+    if note_path.is_file():
+        existing = note_path.read_text(encoding="utf-8")
+        note_path.write_text(existing.rstrip() + "\n\n" + content_to_append, encoding="utf-8")
+    else:
+        note_path.write_text(content_to_append, encoding="utf-8")
+
+    return {
+        "status": "success",
+        "action": "appended",
+        "folder": folder_str,
+        "date": day,
+        "quotes_count": len(quotes),
+        "filename": note_path.name,
+        "path": str(note_path),
+        "windows_path": to_windows_path(note_path),
+    }
 
 
 def save_obsidian_note(

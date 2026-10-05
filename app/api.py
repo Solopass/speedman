@@ -363,6 +363,20 @@ class ObsidianExportRequest(BaseModel):
     custom_tags: Optional[List[str]] = Field(None, description="Additional Obsidian tags")
     bookmarks: Optional[List[Dict[str, Any]]] = Field(None, description="Client-side bookmarks with timestamps and notes")
     use_llm: bool = Field(True, description="Attempt local AI synthesis on :11440 with graceful fallback")
+    embed_audio: bool = Field(False, description="Embed audio player ![[<audio>]] in note")
+    deep_link_timestamps: bool = Field(False, description="Format timestamps as obsidian:// deep-links")
+
+
+class DailyDigestExportRequest(BaseModel):
+    quotes: List[Dict[str, Any]] = Field(..., description="Quotes and bookmarks to append")
+    source_title: str = Field(..., description="Title of the source audio")
+    folder: str = Field("Digests", description="Target 1Notebook subfolder (defaults to Digests)")
+    date_str: Optional[str] = Field(None, description="Optional target date YYYY-MM-DD")
+
+
+class CleanCacheRequest(BaseModel):
+    days: float = Field(7.0, ge=0.0, description="Age threshold in days")
+    all_files: bool = Field(False, description="Purge all cache files regardless of age")
 
 
 class OpenObsidianNoteRequest(BaseModel):
@@ -1492,6 +1506,7 @@ def export_to_obsidian(req: ObsidianExportRequest):
         summary_data = obsidian.generate_note_summary(segments, use_llm=req.use_llm)
 
     note_title = req.note_title.strip() if req.note_title else stem
+    audio_fname = req.output_name if req.output_name.lower().endswith((".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".aac")) else f"{stem}.wav"
     formatted_md = obsidian.format_obsidian_markdown(
         title=note_title,
         source_name=source_name,
@@ -1502,6 +1517,9 @@ def export_to_obsidian(req: ObsidianExportRequest):
         segments=segments if req.include_transcript else [],
         custom_tags=req.custom_tags,
         include_transcript=req.include_transcript,
+        embed_audio=req.embed_audio,
+        audio_filename=audio_fname,
+        deep_link_timestamps=req.deep_link_timestamps,
     )
 
     try:
@@ -1515,6 +1533,44 @@ def export_to_obsidian(req: ObsidianExportRequest):
     except Exception as e:
         logger.error(f"[obsidian] Note save failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to write note: {e}")
+
+
+@app.post("/api/v1/export/obsidian/daily-digest")
+def export_quotes_to_daily_digest(req: DailyDigestExportRequest):
+    from app import obsidian
+    try:
+        return obsidian.append_quotes_to_daily_note(
+            quotes=req.quotes,
+            source_title=req.source_title,
+            folder=req.folder,
+            date_str=req.date_str,
+        )
+    except obsidian.ObsidianExportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[obsidian] Daily digest append failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to append to daily digest: {e}")
+
+
+@app.get("/api/v1/tools/cache-stats")
+def get_cache_stats_route():
+    from app import cache_cleaner
+    try:
+        return cache_cleaner.get_cache_stats()
+    except Exception as e:
+        logger.error(f"[cache] Failed to fetch cache stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to calculate cache stats: {e}")
+
+
+@app.post("/api/v1/tools/clean-cache")
+def clean_cache_route(req: Optional[CleanCacheRequest] = None):
+    from app import cache_cleaner
+    req = req or CleanCacheRequest()
+    try:
+        return cache_cleaner.clean_cache(max_age_days=req.days, all_files=req.all_files)
+    except Exception as e:
+        logger.error(f"[cache] Failed to clean cache: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clean cache: {e}")
 
 
 @app.post("/api/v1/export/obsidian/open")
