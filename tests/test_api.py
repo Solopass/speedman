@@ -666,6 +666,46 @@ def test_list_saved_outputs(tmp_path, monkeypatch):
     assert names["talk_3.5x_fast.wav"]["speed"] == 3.5
 
 
+def test_delete_saved_output(tmp_path, monkeypatch):
+    from app import api
+    monkeypatch.setattr(api, "OUTPUT_DIR", tmp_path)
+
+    f = tmp_path / "podcast_5x_fast.mp3"
+    f.write_bytes(b"fake audio data")
+    f_json = tmp_path / "podcast_5x_fast.synced.json"
+    f_json.write_text('{"segments": []}', encoding="utf-8")
+    f_vtt = tmp_path / "podcast_5x_fast.vtt"
+    f_vtt.write_text("WEBVTT\n", encoding="utf-8")
+    f_ch = tmp_path / "podcast_5x_fast.chapters.json"
+    f_ch.write_text('{"chapters": []}', encoding="utf-8")
+
+    resp = client.delete("/api/v1/outputs/podcast_5x_fast.mp3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "deleted"
+    assert data["filename"] == "podcast_5x_fast.mp3"
+    assert not f.exists()
+    assert not f_json.exists()
+    assert not f_vtt.exists()
+    assert not f_ch.exists()
+
+
+def test_delete_saved_output_not_found(tmp_path, monkeypatch):
+    from app import api
+    monkeypatch.setattr(api, "OUTPUT_DIR", tmp_path)
+
+    resp = client.delete("/api/v1/outputs/non_existent.mp3")
+    assert resp.status_code == 404
+
+
+def test_delete_saved_output_traversal(tmp_path, monkeypatch):
+    from app import api
+    monkeypatch.setattr(api, "OUTPUT_DIR", tmp_path)
+
+    resp = client.delete("/api/v1/outputs/..%2Fsecret.txt")
+    assert resp.status_code in (400, 403, 404)
+
+
 def test_open_obsidian_note_uri(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
     import subprocess

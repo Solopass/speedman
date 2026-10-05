@@ -859,6 +859,58 @@ def list_saved_outputs(limit: int = 50):
     return items[:limit]
 
 
+@app.delete("/api/v1/outputs/{filename}")
+def delete_saved_output(filename: str):
+    """Safely deletes a compressed audio output and all its companion transcript and chapter files."""
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    target = OUTPUT_DIR / filename
+    if not is_within(target, OUTPUT_DIR):
+        raise HTTPException(status_code=403, detail="Path traversal forbidden")
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"Output file '{filename}' not found")
+
+    stem = safe_stem(target)
+    deleted_files = []
+
+    # Audio file
+    try:
+        target.unlink()
+        deleted_files.append(target.name)
+    except Exception as e:
+        logger.error(f"Failed to delete audio file {target}: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not delete audio file: {e}")
+
+    # Companion files
+    companion_patterns = [
+        f"{stem}.synced.json",
+        f"{stem}.transcript.json",
+        f"{stem}.vtt",
+        f"{stem}.source.vtt",
+        f"{stem}.srt",
+        f"{stem}.source.srt",
+        f"{stem}.txt",
+        f"{stem}.chapters.json",
+        f"{stem}.peaks.json",
+    ]
+    for pattern in companion_patterns:
+        comp = OUTPUT_DIR / pattern
+        if comp.is_file() and is_within(comp, OUTPUT_DIR):
+            try:
+                comp.unlink()
+                deleted_files.append(comp.name)
+            except Exception as e:
+                logger.warning(f"Failed to delete companion file {comp}: {e}")
+
+    return {
+        "status": "deleted",
+        "filename": filename,
+        "deleted_files": deleted_files,
+    }
+
+
 # --------------------------------------------------------------------------- Media API Integration
 
 @app.get("/api/v1/media/status")

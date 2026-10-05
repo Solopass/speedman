@@ -870,15 +870,49 @@
     }
     .quote-copy-pill {
       position: absolute;
-      background: #238636;
+      background: #161b22;
+      border: 1px solid var(--border);
       color: #fff;
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       font-weight: 600;
-      padding: 0.35rem 0.75rem;
-      border-radius: 14px;
-      cursor: pointer;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      padding: 0.25rem 0.4rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.55);
       z-index: 50;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      user-select: none;
+    }
+    .quote-copy-pill button {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #c9d1d9;
+      border-radius: 5px;
+      padding: 0.22rem 0.5rem;
+      font-size: 0.73rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .quote-copy-pill button:hover {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+    .sleep-timer-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #d29922;
+      background: rgba(210, 153, 34, 0.15);
+      border: 1px solid rgba(210, 153, 34, 0.4);
+      padding: 0.15rem 0.45rem;
+      border-radius: 10px;
+      vertical-align: middle;
+      display: inline-block;
     }
 
     /* Transcript Lines & Words */
@@ -2250,8 +2284,10 @@
             <button id="btnResumeFollow" class="btn-resume-follow" onclick="resumeTranscriptFollow()">
               ▶ Resume Following
             </button>
-            <div id="quoteCopyPill" class="quote-copy-pill" style="display: none;" onclick="copySelectedQuote()">
-              📋 Copy Quote with Timestamp
+            <div id="quoteCopyPill" class="quote-copy-pill" style="display: none;">
+              <button id="btnPillCopy" onclick="copySelectedQuote()" onmousedown="event.stopPropagation()">📋 Copy</button>
+              <button id="btnPillBookmark" onclick="bookmarkSelectedQuote()" onmousedown="event.stopPropagation()">⭐ Bookmark</button>
+              <button id="btnPillDigest" onclick="digestSelectedQuote()" onmousedown="event.stopPropagation()">📅 Daily Digest</button>
             </div>
           </div>
         </div>
@@ -2284,6 +2320,27 @@
               <div id="playerRateButtons" style="display: inline-flex; gap: 0.35rem; flex-wrap: wrap;"></div>
               <input type="range" min="0.5" max="3.0" step="0.05" value="1.0" id="playerRateSlider" oninput="setPlayerRate(parseFloat(this.value))" title="Fine-tune playback speed" style="width: 75px; vertical-align: middle;">
               <span id="playerRateDisplay" style="font-size: 0.78rem; font-weight: 600; color: var(--accent); min-width: 38px;">1.00×</span>
+            </div>
+
+            <!-- Volume Slider & Mute Toggle (V) -->
+            <div class="player-vol-group" style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--text-dim);">
+              <button class="skip-btn" id="btnPlayerMute" onclick="togglePlayerMute()" title="Mute/Unmute audio (V)" style="padding: 0.25rem 0.45rem; font-size: 0.85rem;">🔊</button>
+              <input type="range" min="0" max="1" step="0.05" value="1.0" id="playerVolSlider" oninput="setPlayerVolume(parseFloat(this.value))" title="Volume (V to toggle mute)" style="width: 65px; vertical-align: middle;">
+              <span id="playerVolDisplay" style="font-size: 0.75rem; color: var(--text-dim); min-width: 32px;">100%</span>
+            </div>
+
+            <!-- Sleep Timer / Auto-Stop -->
+            <div class="sleep-timer-group" style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem;">
+              <span style="color: var(--text-dim);">⏱️ Sleep:</span>
+              <select id="sleepTimerSelect" onchange="setSleepTimer(this.value)" class="text-input" style="padding: 0.2rem 0.4rem; font-size: 0.75rem; background: #21262d; border-radius: 4px; border: 1px solid var(--border); color: #c9d1d9; cursor: pointer;">
+                <option value="off">Off</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">60 min</option>
+                <option value="chapter">End of Chapter</option>
+              </select>
+              <span id="sleepTimerBadge" class="sleep-timer-badge" style="display: none;"></span>
             </div>
 
             <button class="skip-btn" onclick="openSavedOutputsModal()" style="font-weight: 600; color: var(--accent);" title="Browse and load saved audio & transcripts">
@@ -2366,6 +2423,7 @@
           <div class="shortcut-row"><kbd>←</kbd> / <kbd>→</kbd> or <kbd>H</kbd> / <kbd>L</kbd> <span>Seek &plusmn;5s</span></div>
           <div class="shortcut-row"><kbd>[</kbd> / <kbd>]</kbd> <span>Player Rate &plusmn;0.1×</span></div>
           <div class="shortcut-row"><kbd>{</kbd> / <kbd>}</kbd> <span>Player Rate &plusmn;0.05×</span></div>
+          <div class="shortcut-row"><kbd>V</kbd> <span>Toggle Mute / Unmute</span></div>
           <div class="shortcut-row"><kbd>?</kbd> <span>Toggle this shortcuts cheat sheet</span></div>
         </div>
       </div>
@@ -3000,6 +3058,7 @@
       statusBar.textContent = '';
       statusBar.style.display = '';
       playerCard.classList.remove('active');
+      dismissResumeBanner();
 
       const speed = parseFloat(document.getElementById('speedSlider').value);
       const uniform = document.getElementById('uniformToggle').checked;
@@ -3552,6 +3611,7 @@
       audioPlayer.src = data.audio_url;
       audioPlayer.playbackRate = currentPlaybackRate;
       playerCard.classList.add('active');
+      dismissResumeBanner();
 
       initWaveform();
       loadWaveformPeaks(data.filename);
@@ -3559,6 +3619,7 @@
         if (audioPlayer.duration) {
           drawWaveform(audioPlayer.currentTime / audioPlayer.duration);
         }
+        checkChapterSleepTimer(audioPlayer.currentTime);
       };
 
       audioPlayer.play().catch(() => {});
@@ -3595,6 +3656,139 @@
         const r = parseFloat(btn.dataset.rate);
         btn.classList.toggle('active', Math.abs(r - rate) < 0.01);
       });
+    }
+
+    // ----------------------------------------------------------------- Volume & Mute Controls
+    let currentVolume = 1.0;
+    let isMuted = false;
+    let preMuteVolume = 1.0;
+
+    function setPlayerVolume(vol) {
+      vol = Math.max(0, Math.min(1, parseFloat(vol)));
+      currentVolume = vol;
+      isMuted = (vol === 0);
+      const audio = document.getElementById('audioPlayer');
+      const video = document.getElementById('videoPlayer');
+      if (audio) audio.volume = vol;
+      if (video) video.volume = vol;
+
+      const btn = document.getElementById('btnPlayerMute');
+      const slider = document.getElementById('playerVolSlider');
+      const disp = document.getElementById('playerVolDisplay');
+      if (slider) slider.value = vol;
+      if (disp) disp.textContent = Math.round(vol * 100) + '%';
+      if (btn) btn.textContent = isMuted ? '🔇' : (vol < 0.5 ? '🔉' : '🔊');
+
+      try { localStorage.setItem('speedman_player_volume', vol.toString()); } catch (_) {}
+    }
+
+    function togglePlayerMute() {
+      if (isMuted) {
+        setPlayerVolume(preMuteVolume > 0 ? preMuteVolume : 1.0);
+      } else {
+        preMuteVolume = currentVolume > 0 ? currentVolume : 1.0;
+        setPlayerVolume(0);
+      }
+    }
+
+    // ----------------------------------------------------------------- Sleep Timer / Auto-Stop
+    let sleepTimerType = null;
+    let sleepTimerEndTimestamp = 0;
+    let sleepTimerInterval = null;
+    let sleepTimerChapterIndex = -1;
+
+    function setSleepTimer(val) {
+      if (sleepTimerInterval) {
+        clearInterval(sleepTimerInterval);
+        sleepTimerInterval = null;
+      }
+      const badge = document.getElementById('sleepTimerBadge');
+      const select = document.getElementById('sleepTimerSelect');
+      if (select) select.value = val;
+
+      if (val === 'off' || !val) {
+        sleepTimerType = null;
+        if (badge) badge.style.display = 'none';
+        showToast('⏱️ Sleep timer off');
+        return;
+      }
+
+      if (val === 'chapter') {
+        sleepTimerType = 'chapter';
+        const p = document.getElementById('audioPlayer');
+        const cur = p ? p.currentTime : 0;
+        sleepTimerChapterIndex = -1;
+        if (trChapters && trChapters.length) {
+          for (let i = 0; i < trChapters.length; i++) {
+            const ch = trChapters[i];
+            const nextCh = trChapters[i + 1];
+            if (cur >= ch.start && (!nextCh || cur < nextCh.start)) {
+              sleepTimerChapterIndex = i;
+              break;
+            }
+          }
+        }
+        if (badge) {
+          badge.textContent = '⏱️ Stop at Chapter End';
+          badge.style.display = 'inline-block';
+        }
+        showToast('⏱️ Sleep timer: will pause at end of current chapter');
+        return;
+      }
+
+      const mins = parseInt(val, 10);
+      if (isNaN(mins)) return;
+      sleepTimerType = 'time';
+      sleepTimerEndTimestamp = Date.now() + mins * 60 * 1000;
+      if (badge) badge.style.display = 'inline-block';
+      updateSleepTimerDisplay();
+
+      sleepTimerInterval = setInterval(() => {
+        const remainingMs = sleepTimerEndTimestamp - Date.now();
+        if (remainingMs <= 0) {
+          clearInterval(sleepTimerInterval);
+          sleepTimerInterval = null;
+          sleepTimerType = null;
+          if (badge) badge.style.display = 'none';
+          if (select) select.value = 'off';
+          const audio = document.getElementById('audioPlayer');
+          const video = document.getElementById('videoPlayer');
+          if (audio) audio.pause();
+          if (video) video.pause();
+          showToast('⏱️ Sleep timer finished — playback paused.');
+        } else {
+          updateSleepTimerDisplay();
+        }
+      }, 1000);
+
+      showToast(`⏱️ Sleep timer set for ${mins} minutes`);
+    }
+
+    function updateSleepTimerDisplay() {
+      const badge = document.getElementById('sleepTimerBadge');
+      if (!badge || sleepTimerType !== 'time') return;
+      const remSec = Math.max(0, Math.floor((sleepTimerEndTimestamp - Date.now()) / 1000));
+      const m = Math.floor(remSec / 60);
+      const s = String(remSec % 60).padStart(2, '0');
+      badge.textContent = `⏱️ ${m}:${s}`;
+    }
+
+    function checkChapterSleepTimer(curTime) {
+      if (sleepTimerType !== 'chapter' || !trChapters || sleepTimerChapterIndex < 0) return;
+      const nextCh = trChapters[sleepTimerChapterIndex + 1];
+      const endSec = nextCh ? nextCh.start : (trTotalOutDur || 999999);
+      if (curTime >= endSec - 0.5) {
+        sleepTimerType = null;
+        const badge = document.getElementById('sleepTimerBadge');
+        if (badge) badge.style.display = 'none';
+        const select = document.getElementById('sleepTimerSelect');
+        if (select) select.value = 'off';
+        const audio = document.getElementById('audioPlayer');
+        const video = document.getElementById('videoPlayer');
+        if (audio) audio.pause();
+        if (video) video.pause();
+        showToast('⏱️ Chapter ended — sleep timer paused playback.');
+      }
     }
 
     // ----------------------------------------------------------------- Saved Outputs Library Modal
@@ -3729,14 +3923,76 @@
         loadBtn.style.color = 'var(--accent)';
         loadBtn.textContent = '▶ Load';
         loadBtn.onclick = () => loadAudioOutput(it.filename);
-
         btnCol.appendChild(loadBtn);
+
+        if (it.has_transcript) {
+          const obsBtn = document.createElement('button');
+          obsBtn.className = 'btn-preset';
+          obsBtn.style.color = '#a371f7';
+          obsBtn.style.borderColor = 'rgba(163,113,247,0.4)';
+          obsBtn.style.padding = '0.35rem 0.6rem';
+          obsBtn.title = 'Format and send notes directly to Obsidian';
+          obsBtn.textContent = '📓 Note';
+          obsBtn.onclick = (e) => {
+            e.stopPropagation();
+            openObsidianExportForFile(it.filename, it.stem);
+          };
+          btnCol.appendChild(obsBtn);
+        }
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-preset';
+        delBtn.style.padding = '0.35rem 0.55rem';
+        delBtn.style.color = 'var(--danger)';
+        delBtn.style.borderColor = 'rgba(248,81,73,0.3)';
+        delBtn.title = 'Delete this output and its companion files from D:\\Audio\\Speed';
+        delBtn.textContent = '🗑️';
+        delBtn.onclick = (e) => {
+          e.stopPropagation();
+          deleteSavedOutput(it.filename);
+        };
+        btnCol.appendChild(delBtn);
+
         div.appendChild(infoCol);
         div.appendChild(btnCol);
         frag.appendChild(div);
       });
       listEl.innerHTML = '';
       listEl.appendChild(frag);
+    }
+
+    function openObsidianExportForFile(filename, stem) {
+      lastGeneratedFilename = filename;
+      const titleInput = document.getElementById('obsidianNoteTitle');
+      if (titleInput) titleInput.value = stem || filename.replace(/\.[^.]+$/, '');
+      const countEl = document.getElementById('obsidianHighlightCount');
+      if (countEl) {
+        const bms = (savedBookmarks && savedBookmarks[stem]) || [];
+        countEl.textContent = bms.length;
+      }
+      openObsidianExportModal();
+    }
+
+    async function deleteSavedOutput(filename) {
+      if (!confirm(`Delete "${filename}" and its companion transcript files permanently from D:\\Audio\\Speed?`)) return;
+      try {
+        const res = await fetch('/api/v1/outputs/' + encodeURIComponent(filename), {
+          method: 'DELETE',
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to delete output');
+        }
+        showToast(`🗑️ Deleted ${filename}`);
+        if (lastGeneratedFilename === filename) {
+          const audio = document.getElementById('audioPlayer');
+          if (audio) { audio.pause(); audio.src = ''; }
+          lastGeneratedFilename = null;
+        }
+        await loadSavedOutputsList();
+      } catch (e) {
+        showToast(`❌ Error: ${e.message}`);
+      }
     }
 
     function filterSavedOutputs(query) {
@@ -3750,6 +4006,7 @@
     }
 
     function loadAudioOutput(filename) {
+      dismissResumeBanner();
       lastGeneratedFilename = filename;
       lastSourcePath = null;
       const audio = document.getElementById('audioPlayer');
@@ -3767,6 +4024,7 @@
           if (audio.duration) {
             drawWaveform(audio.currentTime / audio.duration);
           }
+          checkChapterSleepTimer(audio.currentTime);
         };
         audio.load();
         audio.play().catch(() => {});
@@ -5966,13 +6224,14 @@
         const target = targetLine.offsetTop - (body.clientHeight / 2) + (targetLine.clientHeight / 2);
         body.scrollTo({top: Math.max(0, target), behavior: 'smooth'});
 
-        // In-Player Instant Seek: jump playback to matching transcript cue
-        const p = document.getElementById('audioPlayer');
-        if (p && targetLine.dataset.start !== undefined) {
+        // In-Player Instant Seek: jump playback to matching transcript cue across audio & video
+        if (targetLine.dataset.start !== undefined) {
           const startTime = parseFloat(targetLine.dataset.start);
+          const sourceStart = parseFloat(targetLine.dataset.sourceStart || targetLine.dataset.source_start || 0);
           if (!isNaN(startTime)) {
-            p.currentTime = Math.max(0, startTime);
-            if (p.duration) {
+            seekToTranscript({start: startTime, source_start: sourceStart});
+            const p = document.getElementById('audioPlayer');
+            if (p && p.duration) {
               drawWaveform(p.currentTime / p.duration);
             }
           }
@@ -6334,30 +6593,101 @@
       }
       const rect = range.getBoundingClientRect();
       const cRect = container.getBoundingClientRect();
-      pill.style.left = `${Math.max(10, rect.left - cRect.left + (rect.width / 2) - 80)}px`;
-      pill.style.top = `${Math.max(10, rect.top - cRect.top - 34)}px`;
-      pill.style.display = 'block';
+      pill.style.left = `${Math.max(10, rect.left - cRect.left + (rect.width / 2) - 130)}px`;
+      pill.style.top = `${Math.max(10, rect.top - cRect.top - 36)}px`;
+      pill.style.display = 'inline-flex';
     });
 
-    function copySelectedQuote() {
+    function getSelectedQuoteData() {
       const sel = window.getSelection();
       const text = sel ? sel.toString().trim() : '';
-      if (!text) return;
+      if (!text) return null;
       const media = activeMediaElement() || {el: document.getElementById('audioPlayer'), source: false};
       const cur = media.el ? media.el.currentTime : 0;
-      const m = Math.floor(cur / 60);
-      const s = String(Math.floor(cur % 60)).padStart(2, '0');
-      const quote = `"[${m}:${s}] ${text}"`;
+      return { text, time: cur };
+    }
+
+    function copySelectedQuote() {
+      const data = getSelectedQuoteData();
+      if (!data) return;
+      const m = Math.floor(data.time / 60);
+      const s = String(Math.floor(data.time % 60)).padStart(2, '0');
+      const quote = `"[${m}:${s}] ${data.text}"`;
       copyToClipboard(quote, () => {
-        const pill = document.getElementById('quoteCopyPill');
-        if (pill) {
-          pill.textContent = '✓ Copied!';
+        const btn = document.getElementById('btnPillCopy');
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = '✓ Copied!';
           setTimeout(() => {
-            pill.textContent = '📋 Copy Quote with Timestamp';
-            pill.style.display = 'none';
+            btn.textContent = orig;
+            const pill = document.getElementById('quoteCopyPill');
+            if (pill) pill.style.display = 'none';
           }, 1200);
         }
       });
+    }
+
+    function bookmarkSelectedQuote() {
+      const data = getSelectedQuoteData();
+      if (!data) return;
+      const stem = getCurrentStem();
+      if (!stem) {
+        showToast('Please load an audio file first');
+        return;
+      }
+      const bookmark = {
+        id: 'bm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        time: data.time,
+        startTime: Math.max(0, data.time - 3),
+        endTime: data.time + 2,
+        text: data.text,
+        note: '',
+        source: isSourceActive(),
+        timestamp: new Date().toISOString()
+      };
+      if (!savedBookmarks[stem]) savedBookmarks[stem] = [];
+      savedBookmarks[stem].push(bookmark);
+      try { localStorage.setItem('speedman_bookmarks', JSON.stringify(savedBookmarks)); } catch(e) {}
+      updateBookmarksBadge();
+      refreshHighlightedWords();
+      showToast(`⭐ Bookmarked quote at ${fmtTime(data.time)}`);
+      const pill = document.getElementById('quoteCopyPill');
+      if (pill) pill.style.display = 'none';
+    }
+
+    async function digestSelectedQuote() {
+      const data = getSelectedQuoteData();
+      if (!data) return;
+      const stem = getCurrentStem();
+      const quoteItem = {
+        startTime: Math.max(0, data.time - 3),
+        endTime: data.time + 2,
+        time: data.time,
+        text: data.text,
+        note: 'Selected quote',
+      };
+      showToast('⏳ Appending quote to Daily Digest…');
+      try {
+        const res = await fetch('/api/v1/export/obsidian/daily-digest', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            quotes: [quoteItem],
+            source_title: stem || 'Speedman Quote',
+            folder: 'Digests',
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to append to daily digest');
+        }
+        const resData = await res.json();
+        showToast(`📅 Appended quote to 1Notebook/${resData.relative_path}`);
+      } catch (e) {
+        showToast(`❌ Error: ${e.message}`);
+      }
+      const pill = document.getElementById('quoteCopyPill');
+      if (pill) pill.style.display = 'none';
     }
 
     // ----------------------------------------------------------------- Global Keyboard Shortcuts
@@ -6417,6 +6747,12 @@
         if (rsDr && rsDr.style.display !== 'none') { toggleReaderSettingsDrawer(); return; }
         if (zenSentenceActive) { toggleZenSentenceMode(); return; }
         if (document.body.classList.contains('zen-active')) toggleZenMode();
+        return;
+      }
+
+      if (e.code === 'KeyV') {
+        e.preventDefault();
+        togglePlayerMute();
         return;
       }
 
@@ -7175,6 +7511,13 @@
     if (vpEl) vpEl.addEventListener('play', handleAudioPlayEvent);
 
     checkResumeSessionOnLoad();
+
+    try {
+      const savedVol = localStorage.getItem('speedman_player_volume');
+      if (savedVol !== null && !isNaN(parseFloat(savedVol))) {
+        setPlayerVolume(parseFloat(savedVol));
+      }
+    } catch (_) {}
 
     // Browsers throttle this interval to roughly once a minute in a hidden tab, so beat
     // the moment the tab is looked at again rather than waiting for the next throttled
