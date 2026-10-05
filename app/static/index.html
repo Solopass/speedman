@@ -1316,6 +1316,36 @@
       flex: 1;
     }
 
+    /* Resume Session Banner */
+    .resume-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(90deg, rgba(35, 134, 54, 0.25) 0%, rgba(22, 27, 34, 0.95) 100%);
+      border: 1px solid #238636;
+      border-radius: 8px;
+      padding: 0.65rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.88rem;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    .resume-info { display: flex; align-items: center; gap: 0.6rem; }
+    .resume-icon { color: #3fb950; font-size: 1.1rem; }
+    .resume-time { color: #58a6ff; font-weight: 700; font-family: var(--sr-font-mono); }
+    .resume-actions { display: flex; align-items: center; gap: 0.5rem; }
+    .resume-action-btn { background: #238636 !important; color: #fff !important; font-weight: 600; padding: 0.35rem 0.75rem !important; }
+    .resume-action-btn:hover { background: #2ea043 !important; }
+    .resume-dismiss-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; font-size: 1rem; padding: 2px 6px; }
+    .resume-dismiss-btn:hover { color: #fff; }
+
+    /* Batch Queue Card */
+    .batch-queue-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 240px; overflow-y: auto; margin-top: 0.5rem; }
+    .batch-queue-item { display: flex; justify-content: space-between; align-items: center; background: #161b22; border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.82rem; }
+    .batch-queue-item.active { border-color: var(--accent); background: rgba(88, 166, 255, 0.08); }
+    .batch-queue-item.done { border-color: #238636; }
+    .batch-item-status { font-family: var(--sr-font-mono); font-size: 0.75rem; font-weight: 600; }
+
     /* Comparison Section */
 
     .comparison-section {
@@ -1645,10 +1675,10 @@
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
-          <p>Drag and drop any audio file here, or click to browse</p>
+          <p>Drag and drop audio file(s) here, or click to browse</p>
           <p style="font-size: 0.75rem; margin-top: 4px;">Supports MP3, WAV, M4A, FLAC, OGG, OPUS, AAC</p>
           <div class="file-name" id="fileNameDisplay"></div>
-          <input type="file" id="fileInput" accept="audio/*" style="display: none;" onchange="handleFileSelect(this.files)">
+          <input type="file" id="fileInput" accept="audio/*" multiple style="display: none;" onchange="handleFileSelect(this.files)">
         </div>
 
         <!-- Mode 2: Workstation Path -->
@@ -1743,6 +1773,33 @@
         </div>
 
         <div class="status-bar" id="statusBar"></div>
+      </div>
+
+      <!-- Batch Processing Queue Card -->
+      <div class="card" id="batchQueueCard" style="display: none; margin-top: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <div>
+            <h3 style="font-size: 1.05rem; color: #fff;">📦 Batch Processing Queue (<span id="batchCountBadge">0</span>)</h3>
+            <p style="font-size: 0.75rem; color: var(--text-dim);" id="batchSubText">Multiple audio files queued for sequential E-core processing.</p>
+          </div>
+          <button class="btn-preset" onclick="clearBatchQueue()">✕ Clear Batch</button>
+        </div>
+        <div id="batchQueueList" class="batch-queue-list"></div>
+        <button class="btn-run" id="btnStartBatch" onclick="startBatchProcessing()" style="margin-top: 1rem;">
+          ⚡ Process All Files at <span id="batchSpeedLabel">5×</span>
+        </button>
+      </div>
+
+      <!-- Playback Session Resume Banner -->
+      <div id="resumeBanner" class="resume-banner" style="display: none;">
+        <div class="resume-info">
+          <span class="resume-icon">▶</span>
+          <span>Resume <strong id="resumeFileName">podcast.wav</strong> at <span id="resumeTimeStr" class="resume-time">04:15</span></span>
+        </div>
+        <div class="resume-actions">
+          <button class="btn-preset active resume-action-btn" onclick="resumeSavedSession()">Resume</button>
+          <button class="resume-dismiss-btn" onclick="dismissResumeBanner()" title="Dismiss">✕</button>
+        </div>
       </div>
 
       <!-- Player Card -->
@@ -2265,6 +2322,16 @@
         <p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.75rem;">
           Outputs stored in <code>D:\Audio\Speed</code>. Click <strong>Load</strong> to immediately open audio and synced transcripts in the player.
         </p>
+        <div class="cache-storage-bar" id="cacheStorageBox" style="display: flex; align-items: center; justify-content: space-between; background: #161b22; border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.8rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span>📦 Temporary Cache:</span>
+            <strong id="cacheUsageText" style="color: var(--accent);">Scanning…</strong>
+          </div>
+          <div style="display: flex; gap: 0.4rem;">
+            <button class="btn-preset" onclick="runCleanCache(7, false)" title="Delete cache files older than 7 days" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;">🧹 Purge >7d</button>
+            <button class="btn-preset" onclick="runCleanCache(0, true)" title="Delete all temporary downloads, video cache and comparisons" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; color: #f85149;">🗑️ Purge All</button>
+          </div>
+        </div>
         <input type="text" class="text-input" id="savedLibraryFilter" placeholder="Filter saved files…" oninput="filterSavedOutputs(this.value)" style="width: 100%; margin-bottom: 0.75rem;">
         <div id="savedLibraryList" class="saved-library-list">
           <div style="text-align: center; color: var(--text-dim); padding: 1rem;">Loading saved outputs…</div>
@@ -2288,6 +2355,7 @@
           <div class="shortcut-row"><kbd>C</kbd> <span>Toggle Center-Lock Auto-Scroll</span></div>
           <div class="shortcut-row"><kbd>P</kbd> <span>Toggle RSVP Peripheral Ghosts</span></div>
           <div class="shortcut-row"><kbd>M</kbd> <span>Mark last 5s as Important (<span id="scBookmarkCount">0</span>)</span></div>
+          <div class="shortcut-row"><kbd>/</kbd> or <kbd>Ctrl+F</kbd> <span>Find in Transcript & Jump Playback</span></div>
           <div class="shortcut-row"><kbd>Ctrl+H</kbd> <span>In-Place Find & Replace</span></div>
           <div class="shortcut-row"><kbd>T</kbd> <span>Toggle Chapters / Table of Contents Drawer</span></div>
           <div class="shortcut-row"><kbd>Shift+F</kbd> <span>Video Fullscreen with Subtitles</span></div>
@@ -2349,6 +2417,7 @@
           </h3>
           <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
             <button class="btn-preset" onclick="openObsidianExportModal()" style="background: #a371f7; color: #fff; font-weight: 600;" title="Format & send highlights and summary to Obsidian note">📓 Send to Obsidian</button>
+            <button class="btn-preset" onclick="appendBookmarksToDailyDigest()" style="background: #238636; color: #fff; font-weight: 600;" title="Append highlights directly into today's Daily Digest in 1Notebook">📅 Append to Daily Digest</button>
             <button class="btn-preset" onclick="copyBookmarksMarkdown()" title="Copy all quotes as Markdown notes">📋 Copy Markdown</button>
             <button class="btn-preset" onclick="exportBookmarksMarkdownFile()" title="Download as .md file">💾 Export .md</button>
             <button class="btn-preset" onclick="exportBookmarksCsv()" title="Download as CSV spreadsheet">📊 CSV</button>
@@ -2414,6 +2483,14 @@
             <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; color: #fff;">
               <input type="checkbox" id="obsidianIncludeTranscript" checked>
               <span>📜 <b>Include Collapsible Full Transcript</b> (Searchable without cluttering note)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; color: #fff;">
+              <input type="checkbox" id="obsidianEmbedAudio">
+              <span>🎵 <b>Embed Native Audio Player</b> (<code>![[file.wav]]</code> wikilink in note)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; color: #fff;">
+              <input type="checkbox" id="obsidianDeepLinks">
+              <span>🔗 <b>Obsidian Deep-Link Timestamps</b> (Clickable <code>obsidian://</code> playback anchors)</span>
             </label>
           </div>
 
@@ -2675,11 +2752,160 @@
       if (files.length) handleFileSelect(files);
     });
 
+    let batchQueueFiles = [];
+    let isBatchRunning = false;
+
     function handleFileSelect(files) {
-      if (!files.length) return;
+      if (!files || !files.length) return;
+      if (files.length > 1) {
+        batchQueueFiles = Array.from(files).map(f => ({
+          file: f,
+          status: 'queued',
+          result: null,
+          error: null,
+        }));
+        selectedFile = files[0];
+        document.getElementById('fileNameDisplay').textContent = `${files.length} audio files selected for batch queue`;
+        renderBatchQueueUI();
+        validateSingleRunReady();
+        showToast(`📦 ${files.length} audio files queued for batch processing`);
+        return;
+      }
       selectedFile = files[0];
       document.getElementById('fileNameDisplay').textContent = 'Selected: ' + selectedFile.name + ' (' + (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB)';
       validateSingleRunReady();
+    }
+
+    function renderBatchQueueUI() {
+      const card = document.getElementById('batchQueueCard');
+      const list = document.getElementById('batchQueueList');
+      const badge = document.getElementById('batchCountBadge');
+      const speedLabel = document.getElementById('batchSpeedLabel');
+      const slider = document.getElementById('speedSlider');
+      if (speedLabel && slider) speedLabel.textContent = `${slider.value}×`;
+
+      if (!batchQueueFiles.length) {
+        if (card) card.style.display = 'none';
+        return;
+      }
+
+      if (badge) badge.textContent = batchQueueFiles.length;
+      if (card) card.style.display = 'block';
+
+      if (list) {
+        list.innerHTML = '';
+        batchQueueFiles.forEach((item, idx) => {
+          const div = document.createElement('div');
+          div.className = 'batch-queue-item';
+          div.id = `batchItem_${idx}`;
+          const mb = (item.file.size / (1024 * 1024)).toFixed(1);
+          let badgeHtml = '';
+          if (item.status === 'done') {
+            badgeHtml = `<span style="color: var(--success); font-weight: 600;">✓ Done</span>`;
+          } else if (item.status === 'processing') {
+            badgeHtml = `<span style="color: var(--accent); font-weight: 600;">⏳ Processing…</span>`;
+          } else if (item.status === 'error') {
+            badgeHtml = `<span style="color: var(--danger); font-weight: 600;" title="${escapeHtml(item.error || '')}">✕ Error</span>`;
+          } else {
+            badgeHtml = `<span style="color: var(--text-dim); font-weight: 500;">Queued</span>`;
+          }
+
+          div.innerHTML = `
+            <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <span style="font-weight: 600; color: #fff;">${escapeHtml(item.file.name)}</span>
+              <span style="color: var(--text-dim); margin-left: 0.5rem; font-size: 0.75rem;">(${mb} MB)</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              ${badgeHtml}
+              ${!isBatchRunning && item.status === 'queued' ? `<button class="btn-preset" onclick="removeBatchItem(${idx})" style="padding: 0.15rem 0.4rem; font-size: 0.72rem;">✕</button>` : ''}
+              ${item.status === 'done' && item.result ? `<button class="btn-preset" onclick="loadAudioOutput('${escapeHtml(item.result.filename)}')" style="padding: 0.15rem 0.45rem; font-size: 0.72rem; color: var(--accent);">▶ Play</button>` : ''}
+            </div>
+          `;
+          list.appendChild(div);
+        });
+      }
+    }
+
+    function removeBatchItem(idx) {
+      if (isBatchRunning) return;
+      batchQueueFiles.splice(idx, 1);
+      renderBatchQueueUI();
+    }
+
+    function clearBatchQueue() {
+      if (isBatchRunning) {
+        if (!confirm('Batch processing is running. Stop and clear queue?')) return;
+      }
+      isBatchRunning = false;
+      batchQueueFiles = [];
+      renderBatchQueueUI();
+    }
+
+    async function startBatchProcessing() {
+      if (isBatchRunning || !batchQueueFiles.length) return;
+      const speed = parseFloat(document.getElementById('speedSlider').value);
+      const uniform = document.getElementById('uniformToggle').checked;
+      const btn = document.getElementById('btnStartBatch');
+
+      isBatchRunning = true;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Processing Queue…';
+      }
+
+      let successCount = 0;
+      for (let i = 0; i < batchQueueFiles.length; i++) {
+        if (!isBatchRunning) break;
+        const item = batchQueueFiles[i];
+        if (item.status === 'done') {
+          successCount++;
+          continue;
+        }
+
+        item.status = 'processing';
+        renderBatchQueueUI();
+
+        const formData = new FormData();
+        formData.append('file', item.file);
+        formData.append('speed', speed);
+        formData.append('preset', selectedPreset);
+        formData.append('uniform', uniform);
+        formData.append('format', selectedFormat);
+
+        try {
+          const res = await fetch('/api/v1/compress', {
+            method: 'POST',
+            body: formData,
+          });
+          if (!res.ok) {
+            let detail = 'Compression failed';
+            try {
+              const err = await res.json();
+              if (err && err.detail) detail = err.detail;
+            } catch (_) {
+              const txt = await res.text().catch(() => '');
+              if (txt) detail = txt.slice(0, 200);
+            }
+            throw new Error(detail);
+          }
+          const data = await res.json();
+          item.status = 'done';
+          item.result = data;
+          successCount++;
+          renderCompletedResult(data);
+        } catch (err) {
+          item.status = 'error';
+          item.error = err.message;
+        }
+        renderBatchQueueUI();
+      }
+
+      isBatchRunning = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = `⚡ Process All Files at ${speed}×`;
+      }
+      showToast(`📦 Batch complete: ${successCount}/${batchQueueFiles.length} files compressed`);
     }
 
     function handlePathInput(val) {
@@ -2728,7 +2954,10 @@
     }
 
     function updateSpeed(val) {
-      document.getElementById('speedDisplay').textContent = parseFloat(val).toFixed(1) + '×';
+      const spdStr = parseFloat(val).toFixed(1) + '×';
+      document.getElementById('speedDisplay').textContent = spdStr;
+      const batchSpeed = document.getElementById('batchSpeedLabel');
+      if (batchSpeed) batchSpeed.textContent = spdStr;
     }
 
     let selectedFormat = 'wav';
@@ -3053,7 +3282,24 @@
         const y = (h - barH) / 2;
         const isPlayed = (i / numBars) <= progress;
 
-        ctx.fillStyle = isPlayed ? '#58a6ff' : '#30363d';
+        // Activity Heatmap: speech density & energy awareness
+        if (isPlayed) {
+          if (barH > h * 0.55) {
+            ctx.fillStyle = '#39c5bb'; // Vibrant teal for dense/high-energy speech
+          } else if (barH <= h * 0.15) {
+            ctx.fillStyle = 'rgba(88, 166, 255, 0.4)'; // Muted blue for pauses & silences
+          } else {
+            ctx.fillStyle = '#58a6ff'; // Standard primary speech
+          }
+        } else {
+          if (barH > h * 0.55) {
+            ctx.fillStyle = '#484f58'; // Dense speech in unplayed track
+          } else if (barH <= h * 0.15) {
+            ctx.fillStyle = '#1c2128'; // Pauses / silences in unplayed track
+          } else {
+            ctx.fillStyle = '#30363d'; // Standard speech in unplayed track
+          }
+        }
         ctx.fillRect(x + 1, y, Math.max(1, barWidth - 2), barH);
       }
 
@@ -3367,6 +3613,7 @@
     }
 
     async function loadSavedOutputsList() {
+      fetchCacheStats();
       const listEl = document.getElementById('savedLibraryList');
       if (!listEl) return;
       listEl.innerHTML = '<div style="text-align: center; color: var(--text-dim); padding: 1.5rem;">Loading saved audio files…</div>';
@@ -3377,6 +3624,45 @@
         renderSavedOutputs(savedOutputsCache);
       } catch (err) {
         listEl.innerHTML = `<div style="text-align: center; color: var(--danger); padding: 1rem;">Failed to load outputs: ${err.message}</div>`;
+      }
+    }
+
+    async function fetchCacheStats() {
+      const usageEl = document.getElementById('cacheUsageText');
+      if (!usageEl) return;
+      try {
+        const res = await fetch('/api/v1/tools/cache-stats');
+        if (!res.ok) throw new Error('Failed to get cache stats');
+        const data = await res.json();
+        usageEl.textContent = `${data.total_size_mb} MB (${data.total_files} files in temp dirs)`;
+      } catch (_) {
+        usageEl.textContent = 'Unavailable';
+      }
+    }
+
+    async function runCleanCache(days, allFiles) {
+      const msg = allFiles
+        ? 'Delete all temporary downloads, video cache, and comparisons? (Saved audio outputs in D:\\Audio\\Speed will remain safe)'
+        : `Delete temporary cache files older than ${days} days?`;
+      if (!confirm(msg)) return;
+      const usageEl = document.getElementById('cacheUsageText');
+      if (usageEl) usageEl.textContent = 'Cleaning…';
+      try {
+        const res = await fetch('/api/v1/tools/clean-cache', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({max_age_days: days, all_files: allFiles}),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Clean failed');
+        }
+        const data = await res.json();
+        showToast(`🧹 Cleaned ${data.deleted_count} files (${data.reclaimed_mb} MB reclaimed)`);
+        fetchCacheStats();
+      } catch (e) {
+        showToast(`❌ Error: ${e.message}`);
+        fetchCacheStats();
       }
     }
 
@@ -4836,6 +5122,35 @@
       renderBookmarksList();
     }
 
+    async function appendBookmarksToDailyDigest() {
+      const stem = getCurrentStem();
+      const items = (savedBookmarks && savedBookmarks[stem]) || [];
+      if (!items.length) {
+        showToast('No highlights to append. Mark quotes with M first!');
+        return;
+      }
+      showToast('⏳ Appending highlights to Daily Digest…');
+      try {
+        const res = await fetch('/api/v1/export/obsidian/daily-digest', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            quotes: items,
+            source_title: stem,
+            folder: 'Digests',
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to append to daily digest');
+        }
+        const data = await res.json();
+        showToast(`📅 Appended ${data.appended_count} quotes to 1Notebook/${data.relative_path}`);
+      } catch (e) {
+        showToast(`❌ Error: ${e.message}`);
+      }
+    }
+
     function copyBookmarksMarkdown() {
       const stem = getCurrentStem();
       const items = savedBookmarks[stem] || [];
@@ -5650,6 +5965,18 @@
         trAutoScrollUntil = performance.now() + 600;
         const target = targetLine.offsetTop - (body.clientHeight / 2) + (targetLine.clientHeight / 2);
         body.scrollTo({top: Math.max(0, target), behavior: 'smooth'});
+
+        // In-Player Instant Seek: jump playback to matching transcript cue
+        const p = document.getElementById('audioPlayer');
+        if (p && targetLine.dataset.start !== undefined) {
+          const startTime = parseFloat(targetLine.dataset.start);
+          if (!isNaN(startTime)) {
+            p.currentTime = Math.max(0, startTime);
+            if (p.duration) {
+              drawWaveform(p.currentTime / p.duration);
+            }
+          }
+        }
       }
     }
 
@@ -5887,6 +6214,8 @@
       const chkSummary = document.getElementById('obsidianIncludeSummary');
       const chkHighlights = document.getElementById('obsidianIncludeHighlights');
       const chkTranscript = document.getElementById('obsidianIncludeTranscript');
+      const chkEmbedAudio = document.getElementById('obsidianEmbedAudio');
+      const chkDeepLinks = document.getElementById('obsidianDeepLinks');
       const btn = document.getElementById('btnSubmitObsidian');
       const statusBox = document.getElementById('obsidianStatusBox');
 
@@ -5898,6 +6227,8 @@
       const includeSummary = chkSummary ? chkSummary.checked : true;
       const includeHighlights = chkHighlights ? chkHighlights.checked : true;
       const includeTranscript = chkTranscript ? chkTranscript.checked : true;
+      const embedAudio = chkEmbedAudio ? chkEmbedAudio.checked : false;
+      const deepLinks = chkDeepLinks ? chkDeepLinks.checked : false;
       const bms = (savedBookmarks && savedBookmarks[stem]) || [];
 
       if (btn) {
@@ -5920,6 +6251,8 @@
           include_summary: includeSummary,
           include_highlights: includeHighlights,
           include_transcript: includeTranscript,
+          embed_audio: embedAudio,
+          deep_link_timestamps: deepLinks,
           custom_tags: customTags,
           bookmarks: bms,
           use_llm: true,
@@ -6042,6 +6375,26 @@
         }[e.code];
         if (handled) { e.preventDefault(); handled(); }
         return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        const srch = document.getElementById('transcriptSearch');
+        if (srch && trSegments && trSegments.length > 0) {
+          e.preventDefault();
+          srch.focus();
+          srch.select();
+          return;
+        }
+      }
+
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const srch = document.getElementById('transcriptSearch');
+        if (srch && trSegments && trSegments.length > 0) {
+          e.preventDefault();
+          srch.focus();
+          srch.select();
+          return;
+        }
       }
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h') {
@@ -6719,10 +7072,109 @@
     sendHeartbeat();
     setInterval(sendHeartbeat, 5000);
     initSpeedReader();
+
+    // ----------------------------------------------------------------- Session Resume Tracking
+    let resumeThrottleTimer = null;
+    function maybeSaveResumeSession() {
+      const p = document.getElementById('audioPlayer');
+      if (!p || !p.src || !lastGeneratedFilename || !p.duration || isNaN(p.duration)) return;
+      if (p.currentTime >= p.duration - 3) {
+        try { localStorage.removeItem('speedman_last_session'); } catch (_) {}
+        return;
+      }
+      if (p.currentTime < 2) return;
+      const session = {
+        filename: lastGeneratedFilename,
+        currentTime: p.currentTime,
+        duration: p.duration,
+        playbackRate: currentPlaybackRate,
+        updatedAt: Date.now()
+      };
+      try {
+        localStorage.setItem('speedman_last_session', JSON.stringify(session));
+      } catch (_) {}
+    }
+
+    function handleAudioTimeUpdateForResume() {
+      if (!resumeThrottleTimer) {
+        resumeThrottleTimer = setTimeout(() => {
+          resumeThrottleTimer = null;
+          maybeSaveResumeSession();
+        }, 1500);
+      }
+    }
+
+    function handleAudioEndedForResume() {
+      try { localStorage.removeItem('speedman_last_session'); } catch (_) {}
+    }
+
+    function checkResumeSessionOnLoad() {
+      try {
+        const raw = localStorage.getItem('speedman_last_session');
+        if (!raw) return;
+        const session = JSON.parse(raw);
+        if (!session || !session.filename || !session.currentTime || session.currentTime < 2) return;
+        if (Date.now() - session.updatedAt > 30 * 86400 * 1000) {
+          localStorage.removeItem('speedman_last_session');
+          return;
+        }
+        const banner = document.getElementById('resumeBanner');
+        const nameEl = document.getElementById('resumeFileName');
+        const timeEl = document.getElementById('resumeTimeStr');
+        if (banner && nameEl && timeEl) {
+          nameEl.textContent = session.filename;
+          timeEl.textContent = fmtTime(session.currentTime);
+          banner.style.display = 'flex';
+          window._savedResumeSession = session;
+        }
+      } catch (_) {}
+    }
+
+    function resumeSavedSession() {
+      const session = window._savedResumeSession;
+      if (!session || !session.filename) {
+        dismissResumeBanner();
+        return;
+      }
+      loadAudioOutput(session.filename);
+      const audio = document.getElementById('audioPlayer');
+      if (audio) {
+        const onReady = () => {
+          audio.removeEventListener('loadedmetadata', onReady);
+          audio.removeEventListener('canplay', onReady);
+          if (session.currentTime > 0) {
+            audio.currentTime = session.currentTime;
+            if (audio.duration) drawWaveform(audio.currentTime / audio.duration);
+          }
+          if (session.playbackRate) {
+            setPlayerRate(session.playbackRate);
+          }
+        };
+        audio.addEventListener('loadedmetadata', onReady);
+        audio.addEventListener('canplay', onReady);
+      }
+      dismissResumeBanner();
+      showToast(`▶ Resumed ${session.filename} at ${fmtTime(session.currentTime)}`);
+    }
+
+    function dismissResumeBanner() {
+      const banner = document.getElementById('resumeBanner');
+      if (banner) banner.style.display = 'none';
+      window._savedResumeSession = null;
+      try { localStorage.removeItem('speedman_last_session'); } catch (_) {}
+    }
+
     const apEl = document.getElementById('audioPlayer');
-    if (apEl) apEl.addEventListener('play', handleAudioPlayEvent);
+    if (apEl) {
+      apEl.addEventListener('play', handleAudioPlayEvent);
+      apEl.addEventListener('timeupdate', handleAudioTimeUpdateForResume);
+      apEl.addEventListener('pause', maybeSaveResumeSession);
+      apEl.addEventListener('ended', handleAudioEndedForResume);
+    }
     const vpEl = document.getElementById('videoPlayer');
     if (vpEl) vpEl.addEventListener('play', handleAudioPlayEvent);
+
+    checkResumeSessionOnLoad();
 
     // Browsers throttle this interval to roughly once a minute in a hidden tab, so beat
     // the moment the tab is looked at again rather than waiting for the next throttled
