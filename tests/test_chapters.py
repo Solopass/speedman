@@ -169,3 +169,78 @@ def test_chapters_api_endpoints(tmp_path, monkeypatch):
         audio_file.unlink(missing_ok=True)
         transcript_file.unlink(missing_ok=True)
         (OUTPUT_DIR / f"{stem}.chapters.json").unlink(missing_ok=True)
+
+
+def test_query_llm_chapters_enforces_contiguity_and_monotonicity(monkeypatch):
+    from unittest.mock import MagicMock
+
+    # Simulated LLM output with gaps and out-of-order start times
+    payload = {
+        "choices": [{
+            "message": {
+                "content": json.dumps({
+                    "chapters": [
+                        {"title": "Middle Part", "start": 60.0, "end": 100.0},
+                        {"title": "First Part", "start": 10.0, "end": 45.0},
+                        {"title": "Last Part", "start": 110.0, "end": 180.0},
+                    ]
+                })
+            }
+        }]
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = json.dumps(payload).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = False
+
+    monkeypatch.setattr(chapters.urllib.request, "urlopen", lambda req, timeout: mock_resp)
+
+    segs = [{"start": 0.0, "end": 180.0, "text": "Continuous lecture."}]
+    res = chapters.query_llm_chapters(segs, duration_s=180.0, timeout_s=5.0)
+    assert res is not None
+    assert len(res) == 3
+    # Check that first chapter starts at 0.0
+    assert res[0]["start"] == 0.0
+    # Check that it was sorted
+    assert res[0]["title"] == "First Part"
+    assert res[1]["title"] == "Middle Part"
+    assert res[2]["title"] == "Last Part"
+    # Check that boundaries are contiguous
+    assert res[0]["end"] == res[1]["start"]
+    assert res[1]["end"] == res[2]["start"]
+    # Check that last ends at duration_s
+    assert res[2]["end"] == 180.0
+    # Check valid IDs
+    assert [c["id"] for c in res] == [1, 2, 3]
+
+
+def test_chapters_api_infers_duration_when_metadata_missing():
+    stem = "api_chapter_missing_dur_test"
+    audio_file = OUTPUT_DIR / f"{stem}.wav"
+    audio_file.write_bytes(b"RIFF dummy wav data")
+
+    transcript_file = OUTPUT_DIR / f"{stem}.synced.json"
+    # Notice: output_duration_s and duration are deliberately missing
+    sample_data = {
+        "output": f"{stem}.wav",
+        "segments": [
+            {"start": 0.0, "end": 45.0, "text": "Intro segment."},
+            {"start": 46.0, "end": 150.0, "text": "Deep discussion segment."},
+        ]
+    }
+    transcript_file.write_text(json.dumps(sample_data), encoding="utf-8")
+
+    try:
+        resp = client.get(f"/api/v1/chapters/{stem}.wav?use_llm=false")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["chapters"]) >= 1
+        # The last chapter end must reflect inferred 150.0s rather than collapsing to 0.0s
+        assert data["chapters"][-1]["end"] == 150.0
+    finally:
+        audio_file.unlink(missing_ok=True)
+        transcript_file.unlink(missing_ok=True)
+        (OUTPUT_DIR / f"{stem}.chapters.json").unlink(missing_ok=True)
+

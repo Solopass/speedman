@@ -955,7 +955,7 @@
       background: rgba(88, 166, 255, 0.22) !important;
       border-radius: 4px;
     }
-    .tr-line.hidden { display: none; }
+    .tr-line.hidden { display: none !important; }
     #transcriptCard.dragover {
       outline: 2px dashed var(--accent);
       outline-offset: -4px;
@@ -2419,8 +2419,9 @@
           <div class="shortcut-row"><kbd>Shift+P</kbd> <span>Video Picture-in-Picture Floating Window</span></div>
           <div class="shortcut-row"><kbd>Z</kbd> <span>Toggle Zen Fullscreen Reader</span></div>
           <div class="shortcut-row"><kbd>Shift+Z</kbd> <span>Toggle Zen Sentence Focus</span></div>
-          <div class="shortcut-row"><kbd>J</kbd> / <kbd>K</kbd> <span>Jump to Previous / Next Line</span></div>
-          <div class="shortcut-row"><kbd>←</kbd> / <kbd>→</kbd> or <kbd>H</kbd> / <kbd>L</kbd> <span>Seek &plusmn;5s</span></div>
+          <div class="shortcut-row"><kbd>Space</kbd> or <kbd>K</kbd> <span>Play / Pause</span></div>
+          <div class="shortcut-row"><kbd>←</kbd> / <kbd>→</kbd> or <kbd>J</kbd> / <kbd>L</kbd> <span>Seek &plusmn;5s</span></div>
+          <div class="shortcut-row"><kbd>↑</kbd> / <kbd>↓</kbd> <span>Jump to Previous / Next Line</span></div>
           <div class="shortcut-row"><kbd>[</kbd> / <kbd>]</kbd> <span>Player Rate &plusmn;0.1×</span></div>
           <div class="shortcut-row"><kbd>{</kbd> / <kbd>}</kbd> <span>Player Rate &plusmn;0.05×</span></div>
           <div class="shortcut-row"><kbd>V</kbd> <span>Toggle Mute / Unmute</span></div>
@@ -3034,8 +3035,12 @@
 
     function fmtTime(sec) {
       const sNum = Math.max(0, Number(sec) || 0);
-      const m = Math.floor(sNum / 60);
+      const h = Math.floor(sNum / 3600);
+      const m = Math.floor((sNum % 3600) / 60);
       const s = Math.floor(sNum % 60);
+      if (h > 0) {
+        return h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+      }
       return m + ':' + (s < 10 ? '0' : '') + s;
     }
 
@@ -3710,6 +3715,7 @@
 
       if (val === 'off' || !val) {
         sleepTimerType = null;
+        sleepTimerChapterIndex = -1;
         if (badge) badge.style.display = 'none';
         showToast('⏱️ Sleep timer off');
         return;
@@ -4169,11 +4175,23 @@
           ensureAudioContextActive();
           pauseOtherMedia(player);
         });
+        player.addEventListener('timeupdate', () => {
+          checkChapterSleepTimer(player.currentTime);
+        });
+        player.addEventListener('ended', () => {
+          if (sleepTimerInterval || sleepTimerType) setSleepTimer('off');
+        });
       }
       if (video) {
         video.addEventListener('play', () => {
           ensureAudioContextActive();
           pauseOtherMedia(video);
+        });
+        video.addEventListener('timeupdate', () => {
+          checkChapterSleepTimer(video.currentTime);
+        });
+        video.addEventListener('ended', () => {
+          if (sleepTimerInterval || sleepTimerType) setSleepTimer('off');
         });
       }
       if (listen) {
@@ -6208,6 +6226,15 @@
         }
       });
 
+      document.querySelectorAll('.tr-para').forEach(para => {
+        if (!q) {
+          para.style.display = '';
+        } else {
+          const hasVisible = Array.from(para.children).some(c => !c.classList.contains('hidden'));
+          para.style.display = hasVisible ? '' : 'none';
+        }
+      });
+
       if (!q || !searchMatches.length) {
         if (counter) {
           counter.style.display = q ? 'inline' : 'none';
@@ -6621,17 +6648,28 @@
       const sel = window.getSelection();
       const text = sel ? sel.toString().trim() : '';
       if (!text) return null;
-      const media = activeMediaElement() || {el: document.getElementById('audioPlayer'), source: false};
-      const cur = media.el ? media.el.currentTime : 0;
-      return { text, time: cur };
+      let quoteTime = null;
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const node = range.startContainer;
+        const lineEl = node && (node.nodeType === 1 ? node : node.parentElement)?.closest('.tr-line');
+        if (lineEl && lineEl.dataset.start !== undefined) {
+          const media = activeMediaElement();
+          const isSrc = media ? media.source : false;
+          quoteTime = isSrc ? parseFloat(lineEl.dataset.sourceStart || lineEl.dataset.start) : parseFloat(lineEl.dataset.start);
+        }
+      }
+      if (quoteTime == null || isNaN(quoteTime)) {
+        const media = activeMediaElement() || {el: document.getElementById('audioPlayer'), source: false};
+        quoteTime = media.el ? media.el.currentTime : 0;
+      }
+      return { text, time: quoteTime };
     }
 
     function copySelectedQuote() {
       const data = getSelectedQuoteData();
       if (!data) return;
-      const m = Math.floor(data.time / 60);
-      const s = String(Math.floor(data.time % 60)).padStart(2, '0');
-      const quote = `"[${m}:${s}] ${data.text}"`;
+      const quote = `"[${fmtTime(data.time)}] ${data.text}"`;
       copyToClipboard(quote, () => {
         const btn = document.getElementById('btnPillCopy');
         if (btn) {
@@ -6657,8 +6695,8 @@
       const bookmark = {
         id: 'bm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         time: data.time,
-        startTime: Math.max(0, data.time - 3),
-        endTime: data.time + 2,
+        startTime: data.time,
+        endTime: data.time + 5,
         text: data.text,
         note: '',
         source: isSourceActive(),
@@ -6679,8 +6717,8 @@
       if (!data) return;
       const stem = getCurrentStem();
       const quoteItem = {
-        startTime: Math.max(0, data.time - 3),
-        endTime: data.time + 2,
+        startTime: data.time,
+        endTime: data.time + 5,
         time: data.time,
         text: data.text,
         note: 'Selected quote',

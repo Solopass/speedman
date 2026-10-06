@@ -346,3 +346,45 @@ def test_api_cache_stats_and_clean_endpoints(tmp_path, monkeypatch):
     clean_data = resp_clean.json()
     assert clean_data["deleted_count"] == 1
     assert not test_file.exists()
+
+
+def test_save_obsidian_note_same_minute_collision(tmp_path, monkeypatch):
+    notebook_dir = tmp_path / "1Notebook"
+    monkeypatch.setattr(obsidian, "NOTEBOOK_ROOT", notebook_dir)
+
+    # 1. First save
+    res1 = obsidian.save_obsidian_note("Lecture Note", "Version 1 content", folder="Summaries", notebook_root=notebook_dir)
+    assert Path(res1["path"]).is_file()
+    assert Path(res1["path"]).read_text(encoding="utf-8") == "Version 1 content"
+
+    # 2. Second save with different content in same minute -> must not overwrite Version 1
+    res2 = obsidian.save_obsidian_note("Lecture Note", "Version 2 content", folder="Summaries", notebook_root=notebook_dir)
+    assert Path(res2["path"]).is_file()
+    assert res2["path"] != res1["path"]
+    assert Path(res1["path"]).read_text(encoding="utf-8") == "Version 1 content"
+    assert Path(res2["path"]).read_text(encoding="utf-8") == "Version 2 content"
+
+    # 3. Third save with identical content -> should reuse without creating duplicate
+    res3 = obsidian.save_obsidian_note("Lecture Note", "Version 1 content", folder="Summaries", notebook_root=notebook_dir)
+    assert res3["path"] == res1["path"]
+
+
+def test_append_quotes_to_daily_note_sanitizes_date_and_folder(tmp_path, monkeypatch):
+    notebook_dir = tmp_path / "1Notebook"
+    monkeypatch.setattr(obsidian, "NOTEBOOK_ROOT", notebook_dir)
+
+    quotes = [{"startTime": 5.0, "endTime": 10.0, "text": "Sanitization quote."}]
+    # Attempt directory traversal in date_str
+    res = obsidian.append_quotes_to_daily_note(
+        quotes=quotes,
+        source_title="Traverse Test",
+        folder="Digests",
+        date_str="../../2026-10-05-bad",
+        notebook_root=notebook_dir,
+    )
+    assert res["status"] == "success"
+    # Slashes must be stripped from the date and resolved safely within Digests
+    saved_path = Path(res["path"])
+    assert saved_path.is_relative_to(notebook_dir / "Digests")
+    assert ".." not in saved_path.name
+

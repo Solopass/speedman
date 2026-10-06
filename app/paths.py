@@ -51,9 +51,16 @@ def is_within(target: Path, root: Path) -> bool:
 
 
 _KNOWN_EXTENSIONS = (
+    ".source.vtt",
+    ".source.srt",
     ".synced.json",
     ".transcript.json",
+    ".chapters.json",
+    ".peaks.json",
     ".vtt",
+    ".srt",
+    ".txt",
+    ".json",
     ".npz",
     ".mp3",
     ".wav",

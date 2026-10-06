@@ -214,9 +214,16 @@ def query_llm_chapters(
                                 "end": round(end, 2),
                                 "summary": str(c.get("summary", "")).strip(),
                             })
-                        # Ensure first starts at 0 and last ends at duration_s
+                        # Ensure monotonically increasing, contiguous chapters
+                        clean_chapters.sort(key=lambda x: x["start"])
                         clean_chapters[0]["start"] = 0.0
+                        for i in range(len(clean_chapters) - 1):
+                            if clean_chapters[i + 1]["start"] <= clean_chapters[i]["start"]:
+                                clean_chapters[i + 1]["start"] = round(clean_chapters[i]["start"] + 1.0, 2)
+                            clean_chapters[i]["end"] = clean_chapters[i + 1]["start"]
                         clean_chapters[-1]["end"] = round(duration_s, 2)
+                        for idx, ch in enumerate(clean_chapters):
+                            ch["id"] = idx + 1
                         return clean_chapters
     except Exception as e:
         logger.info(f"Local AI chaptering unavailable ({e}); falling back to algorithmic detection.")

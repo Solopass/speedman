@@ -404,11 +404,12 @@ def append_quotes_to_daily_note(
         raise ObsidianExportError("No quotes provided to append")
 
     now = datetime.now()
-    day = date_str or now.strftime("%Y-%m-%d")
+    raw_day = str(date_str or now.strftime("%Y-%m-%d")).strip()
+    day = re.sub(r"[^\w-]", "", raw_day) or now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
 
     base_root = notebook_root if notebook_root else NOTEBOOK_ROOT
-    folder_str = str(folder).strip() or "Digests"
+    folder_str = safe_stem(str(folder).strip() or "Digests") or "Digests"
     target_dir = (base_root / folder_str).resolve()
     if not is_within(target_dir, base_root):
         raise ObsidianExportError("Target folder is outside permitted 1Notebook directory")
@@ -505,7 +506,16 @@ def save_obsidian_note(
         existing = note_path.read_text(encoding="utf-8")
         if existing != content:
             suffix = datetime.now().strftime("%Y-%m-%d_%H%M")
-            note_path = target_dir / f"{clean_stem} ({suffix}).md"
+            candidate = target_dir / f"{clean_stem} ({suffix}).md"
+            idx = 1
+            while candidate.is_file():
+                if candidate.read_text(encoding="utf-8") == content:
+                    note_path = candidate
+                    break
+                candidate = target_dir / f"{clean_stem} ({suffix}_{idx}).md"
+                idx += 1
+            else:
+                note_path = candidate
 
     note_path.write_text(content, encoding="utf-8")
 

@@ -496,10 +496,12 @@ def find_source_for_output(output_name: str) -> Optional[Path]:
     if not match:
         return None
     stem = match.group("stem")
+    import glob
+    escaped_stem = glob.escape(stem)
     for directory in SOURCE_SEARCH_DIRS:
         if not directory.is_dir():
             continue
-        for candidate in sorted(directory.glob(f"{stem}.*")):
+        for candidate in sorted(directory.glob(f"{escaped_stem}.*")):
             if candidate.is_file() and not looks_like_speedman_output(candidate):
                 return candidate
     return None
@@ -1680,7 +1682,11 @@ def get_chapters(output_name: str, use_llm: bool = Query(True)):
             pass
 
     segments = transcript_data.get("segments", [])
-    duration_s = float(transcript_data.get("output_duration_s") or transcript_data.get("duration") or 0.0)
+    duration_s = float(
+        transcript_data.get("output_duration_s")
+        or transcript_data.get("duration")
+        or (max((float(s.get("end", 0.0)) for s in segments), default=0.0) if segments else 0.0)
+    )
 
     if not segments:
         return {"status": "empty", "stem": stem, "chapters": []}
@@ -1724,7 +1730,11 @@ def generate_chapters_route(output_name: str, req: Optional[GenerateChaptersRequ
             pass
 
     segments = transcript_data.get("segments", [])
-    duration_s = float(transcript_data.get("output_duration_s") or transcript_data.get("duration") or 0.0)
+    duration_s = float(
+        transcript_data.get("output_duration_s")
+        or transcript_data.get("duration")
+        or (max((float(s.get("end", 0.0)) for s in segments), default=0.0) if segments else 0.0)
+    )
     if not segments:
         raise HTTPException(status_code=400, detail=f"No transcript found for '{stem}' to generate chapters")
 
@@ -1793,10 +1803,11 @@ def get_waveform_peaks(filename: str):
     try:
         target_audio = resolve_output_file(filename)
     except HTTPException:
-        matches = list(OUTPUT_DIR.glob(f"{stem}.*"))
-        audio_matches = [m for m in matches if m.suffix.lower() in (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac")]
-        if audio_matches:
-            target_audio = audio_matches[0]
+        for ext in (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".aac"):
+            cand = OUTPUT_DIR / f"{stem}{ext}"
+            if cand.is_file():
+                target_audio = cand
+                break
         else:
             raise HTTPException(status_code=404, detail=f"Audio file '{filename}' not found in output directory")
 

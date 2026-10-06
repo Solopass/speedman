@@ -782,6 +782,12 @@ def test_safe_stem_handles_decimal_speeds_and_dots():
     assert safe_stem("Dr. Smith - Lecture 01_5.5x_fast") == "Dr. Smith - Lecture 01_5.5x_fast"
     assert safe_stem("/mnt/d/Audio/Speed/interview_3.25x_fast.wav") == "interview_3.25x_fast"
     assert safe_stem("D:\\Audio\\Speed\\interview_3.25x_fast.wav") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.chapters.json") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.peaks.json") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.source.vtt") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.source.srt") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.srt") == "interview_3.25x_fast"
+    assert safe_stem("interview_3.25x_fast.txt") == "interview_3.25x_fast"
 
 
 def test_get_synced_transcript_with_decimal_speeds(tmp_path, monkeypatch):

@@ -100,3 +100,24 @@ def test_compute_waveform_peaks_edge_cases():
     # 5. num_bins <= 0
     peaks_zero = compute_waveform_peaks(np.array([0.5, 0.2]), num_bins=0)
     assert len(peaks_zero) == 1
+
+
+def test_waveform_endpoint_handles_brackets_in_filename():
+    client = TestClient(app)
+    sr = 24000
+    y = np.sin(2 * np.pi * 440 * np.linspace(0, 0.5, sr // 2, dtype=np.float32))
+    filename = "Podcast_[ep42]_5x.wav"
+    out_path = OUTPUT_DIR / filename
+    sio.save(out_path, y, sr)
+
+    try:
+        res = client.get(f"/api/v1/waveform/{filename}")
+        assert res.status_code == 200
+        data = res.json()
+        assert "peaks" in data
+        assert len(data["peaks"]) == 120
+    finally:
+        out_path.unlink(missing_ok=True)
+        peaks_file = OUTPUT_DIR / "Podcast_[ep42]_5x.peaks.json"
+        peaks_file.unlink(missing_ok=True)
+
