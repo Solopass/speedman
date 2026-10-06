@@ -88,12 +88,10 @@ def test_no_difference_has_no_winner():
     assert Verdict(0, "none", "both").winner(make_trial()) is None
 
 
-@pytest.mark.parametrize("choice", ["x", "A ", "", "left"])
+@pytest.mark.parametrize("choice", ["x", "invalid", "", "left"])
 def test_invalid_choice_is_rejected(isolated_dir, choice):
     session = make_session()
     session.directory.mkdir(parents=True, exist_ok=True)
-    if choice.strip().lower() in listening.CHOICES:
-        pytest.skip("normalises to a valid choice")
     with pytest.raises(InvalidVerdict):
         record_verdict(session, 0, choice, "both")
 

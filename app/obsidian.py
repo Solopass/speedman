@@ -250,9 +250,12 @@ def generate_note_summary(
     }
 
 
-def format_secs(seconds: float) -> str:
+def format_secs(seconds: float | None) -> str:
     """Format seconds into MM:SS or HH:MM:SS."""
-    sec = max(0.0, float(seconds))
+    try:
+        sec = max(0.0, float(seconds if seconds is not None else 0.0))
+    except (ValueError, TypeError):
+        sec = 0.0
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)
     s = int(sec % 60)
