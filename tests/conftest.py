@@ -4,6 +4,31 @@ from scipy.signal import butter, sosfilt
 
 SR = 24000
 
+# Nothing listens on the discard port, so a test can never reach the real Media API.
+UNREACHABLE_MEDIA_API = "http://127.0.0.1:9"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_live_media_api():
+    """Keep the suite off the workstation's Media API (127.0.0.1:8080).
+
+    Media API is socket-activated, so a test request starts it, and tests that ingest a URL
+    leave jobs in its live history (D:\\AI\\Cache\\media_jobs.json): by 2026-10-07, 45 of
+    its last 100 jobs were this suite's invalid-non-existent-domain-999.com downloads.
+    Every call goes through app.media_api.MEDIA_API_BASE, so pointing it at a dead port
+    makes Media API look offline, which is the path these tests are written for anyway.
+    """
+    from app import media_api
+
+    real = media_api.MEDIA_API_BASE
+    media_api.MEDIA_API_BASE = UNREACHABLE_MEDIA_API
+    media_api._online_cache = (0.0, False)
+    try:
+        yield
+    finally:
+        media_api.MEDIA_API_BASE = real
+        media_api._online_cache = (0.0, False)
+
 
 @pytest.fixture(scope="session")
 def sr():
