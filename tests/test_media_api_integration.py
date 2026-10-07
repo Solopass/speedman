@@ -201,3 +201,38 @@ def test_download_video_falls_back_locally_when_media_api_offline(tmp_path, monk
     assert path == fake_mp4
     assert pre_existed is False
 
+
+
+class _Done:
+    def __init__(self, out):
+        self.stdout = out
+
+
+@pytest.mark.parametrize("out,state,online", [
+    ("active\nactive\n", "running", True),
+    ("inactive\nactive\n", "ready", True),      # socket-activated: the first real request starts it
+    ("inactive\nfailed\n", "down", False),
+])
+def test_media_api_state_asks_systemd_not_the_port(monkeypatch, out, state, online):
+    """Probing Media API over HTTP starts it (socket activation), so on the workstation the
+    online check asks systemd instead and never connects."""
+    from app import media_api
+    monkeypatch.setattr(media_api, "MEDIA_API_BASE", "http://127.0.0.1:8080")
+    monkeypatch.setattr(media_api, "_state_cache", (0.0, "unknown"))
+    calls = []
+    monkeypatch.setattr(media_api, "subprocess", type("S", (), {
+        "run": staticmethod(lambda cmd, **k: calls.append(cmd) or _Done(out)),
+        "SubprocessError": Exception}))
+
+    def no_http(*a, **k):
+        raise AssertionError("must not connect to Media API")
+    monkeypatch.setattr(media_api.httpx, "Client", no_http)
+    assert media_api.media_api_state(force=True) == state
+    assert media_api.check_media_api_online(force=True) is online
+    assert calls[0] == ["systemctl", "is-active", "media-api.service", "media-api.socket"]
+
+
+def test_media_api_state_is_unknown_for_a_custom_url(monkeypatch):
+    from app import media_api
+    monkeypatch.setattr(media_api, "MEDIA_API_BASE", "http://192.168.1.5:8080")
+    assert media_api.media_api_state(force=True, run=lambda *a, **k: _Done("active\nactive\n")) == "unknown"

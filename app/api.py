@@ -413,6 +413,7 @@ def health():
         "output_dir": str(OUTPUT_DIR),
         "windows_output_dir": to_windows_path(OUTPUT_DIR),
         "media_api_online": check_media_api_online(),
+        "media_api_state": media_api.media_api_state(),   # from systemd: looking doesn't wake it
     }
 
 
@@ -917,11 +918,17 @@ def delete_saved_output(filename: str):
 
 @app.get("/api/v1/media/status")
 def media_api_status():
-    """Checks whether Media API (127.0.0.1:8080) is online."""
+    """Checks whether Media API (127.0.0.1:8080) is online, without waking it.
+
+    "online" includes "ready" (socket-activated: the first real request starts it). Its own
+    /health is read only while the service already runs, so this check never starts it.
+    """
     online = check_media_api_online()
-    health_data = get_media_api_health() if online else None
+    state = media_api.media_api_state()
+    health_data = get_media_api_health() if online and state in ("running", "unknown") else None
     return {
         "online": online,
+        "state": state,
         "url": "http://127.0.0.1:8080",
         "health": health_data,
     }

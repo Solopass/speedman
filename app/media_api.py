@@ -101,12 +101,49 @@ _ONLINE_CACHE_TTL = 10.0
 _online_cache: tuple[float, bool] = (0.0, False)
 
 
-def check_media_api_online(force: bool = False) -> bool:
-    """Returns True if Media API on port 8080 is reachable.
+DEFAULT_MEDIA_API_BASES = ("http://127.0.0.1:8080", "http://localhost:8080")
+_state_cache: tuple[float, str] = (0.0, "unknown")
 
-    Cached for _ONLINE_CACHE_TTL seconds: /health calls this, and an uncached miss costs
-    the full 1.5s timeout whenever Media API is down. Pass force=True to re-probe.
+
+def media_api_state(force: bool = False, run=None) -> str:
+    """Media API's state from systemd, without connecting to it.
+
+    "running" (the service is up), "ready" (only its socket listens: the first request
+    starts it), "down" (neither), or "unknown" (no systemd here, or Media API isn't the
+    local socket-activated one). Media API is socket-activated, so an HTTP "is it up?"
+    probe *starts* it, and one that lands in its ~1 s shutdown starts it straight back
+    up. Asking systemd answers the same question and wakes nothing.
     """
+    global _state_cache
+    if MEDIA_API_BASE.rstrip("/") not in DEFAULT_MEDIA_API_BASES:
+        return "unknown"
+    checked_at, cached = _state_cache
+    now = time.monotonic()
+    if not force and now - checked_at < _ONLINE_CACHE_TTL:
+        return cached
+    try:
+        out = (run or subprocess.run)(["systemctl", "is-active", "media-api.service", "media-api.socket"],
+                  capture_output=True, text=True, timeout=3).stdout.split()
+        service, socket = (out + ["", ""])[:2]
+        state = "running" if service == "active" else "ready" if socket == "active" else "down"
+    except (OSError, subprocess.SubprocessError):
+        state = "unknown"
+    _state_cache = (now, state)
+    return state
+
+
+def check_media_api_online(force: bool = False) -> bool:
+    """Returns True if Media API on port 8080 will answer.
+
+    On the workstation this asks systemd (media_api_state): "ready" counts as online,
+    because the first real request starts it. Only where systemd can't tell (tests, a
+    custom MEDIA_API_URL, no systemd) does it fall back to an HTTP probe, cached for
+    _ONLINE_CACHE_TTL seconds because an uncached miss costs the full 1.5s timeout.
+    """
+    state = media_api_state(force)
+    if state != "unknown":
+        return state in ("running", "ready")
+
     global _online_cache
     checked_at, cached = _online_cache
     now = time.monotonic()
